@@ -1,28 +1,29 @@
-# dplan Cyber Defense
+# dplan Data Runner
 
-Ein Browser-Arcade-Spiel im dplan-Design für Mitarbeitende und Kunden: Schütze das Firmennetzwerk vor Viren, Phishing-Mails, Spam, Bugs und Ransomware – und beweise nach jeder Welle dein Wissen im **Security-Check**.
+Ein 3D-Browser-Spiel im dplan-Design für Mitarbeitende und Kunden: Als dp-Datenpaket rast du durchs Rechenzentrum, weichst Viren, Phishing-Mails, Spam, Bugs und Ransomware aus und beweist an den **Security-Gates** dein Wissen zur IT-Sicherheit.
 
 ## Spielprinzip
 
-- **Steuerung:** Maus / Finger bewegen oder `←` `→` bzw. `A` `D`. Geschossen wird automatisch. `P` / `Esc` pausiert.
-- **Bedrohungen:** Erreicht ein Angreifer das Firmennetzwerk am unteren Rand, sinkt die Netzwerk-Integrität. Bei 0 % ist das Spiel vorbei.
-- **Combo:** Viele Treffer in Folge erhöhen den Punkte-Multiplikator (bis x5).
-- **Power-ups:** `BACKUP` (+20 % Netzwerk), `CLOUD` (Dreifach-Schuss), `UPDATE` (Schnellfeuer), `FIREWALL` (räumt den Bildschirm).
-- **Security-Check:** Nach jeder Welle eine Frage zur IT-Sicherheit (Phishing, Passwörter, MFA, Backups …) mit Erklärung. Richtig = Bonuspunkte und +10 % Netzwerk.
+- **Spur wechseln:** `←` `→` bzw. `A` `D` – auf dem Handy wischen oder links/rechts antippen.
+- **Springen:** `↑`, `W` oder Leertaste – auf dem Handy nach oben wischen. Niedrige Hindernisse (Virus, Bug, Spam) lassen sich überspringen, Ransomware und Phishing nicht.
+- **Netzwerk:** 3 Leben. Jeder Treffer kostet eines.
+- **Power-ups:** `BACKUP` (+1 Netzwerk), `CLOUD` (zieht Datenpakete an), `FIREWALL` (kurz unverwundbar).
+- **Security-Gate:** Vor jedem Gate verschwinden die Hindernisse und das Spiel **hält an**. Die Frage erscheint unten im Bild – Antwort antippen (oder `←` `→` und `Enter`, bzw. `1` `2` `3`). Danach gibt es eine kurze Erklärung, mit «Weiter» fährt das Paket durchs gewählte Tor. Richtig = Bonuspunkte und +1 Netzwerk, falsch = −1 Netzwerk.
 - **Bestenliste:** Top 10, lokal im Browser gespeichert.
 
 ## Starten
 
-Reine statische Webseite ohne Abhängigkeiten. Lokal:
+Statische Webseite ohne Build-Schritt. Die 3D-Bibliothek [Three.js](https://threejs.org) wird per CDN (jsDelivr) geladen – es braucht also eine Internetverbindung.
 
 ```powershell
 ./serve.ps1
 ```
 
-Dann http://localhost:8080 öffnen. Zum Veröffentlichen genügt es, `index.html`, `style.css`, `game.js` und `assets/` auf einen beliebigen Webserver (z.B. Intranet, Azure Static Web Apps, GitHub Pages) zu kopieren.
+Dann http://localhost:8080 öffnen. Zum Veröffentlichen genügt es, `index.html`, `style.css`, `runner.js`, `questions.js` und `assets/` auf einen beliebigen Webserver (z.B. Intranet, Azure Static Web Apps, GitHub Pages) zu kopieren. Direktes Öffnen der Datei per Doppelklick funktioniert nicht (ES-Module brauchen einen Webserver).
 
 ## Anpassen
 
-- **Quizfragen:** Array `QUESTIONS` in `game.js` – die erste Antwort ist jeweils die richtige (wird beim Anzeigen gemischt).
-- **Farben:** `C` in `game.js` und die CSS-Variablen in `style.css`.
-- **Schwierigkeit:** `ENEMY`, `UNLOCK` und `startWave()` in `game.js`.
+- **Quizfragen:** `questions.js` – die erste Antwort ist jeweils die richtige (wird beim Anzeigen gemischt).
+- **Tempo & Schwierigkeit:** `SPEED_START`, `SPEED_MAX`, `SPEED_RAMP`, `GATE_EVERY` und `UNLOCK_AT` oben in `runner.js`.
+- **Farben:** `C` in `runner.js` und die CSS-Variablen in `style.css`.
+- **Testen:** Mit `?debug` in der URL stehen in der Browser-Konsole `runnerDebug.invincible()`, `runnerDebug.nextGate()` und `runnerDebug.info()` zur Verfügung.

@@ -1,0 +1,1284 @@
+import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+window.__runnerReady = true;
+
+// ---------- Konstanten (dplan Design) ----------
+const C = {
+  blue: 0x009fe3,
+  blueDark: 0x0079b0,
+  grey: 0x8c8c8f,
+  greyDark: 0x5d5e61,
+  bg: 0xeaf2f8,
+  red: 0xe5484d,
+  orange: 0xf08a24,
+  purple: 0x7c5cd6,
+  green: 0x22a06b,
+  fire: 0xe5603b,
+};
+const FONT = '"Arial Rounded MT Bold", "Helvetica Rounded", "Helvetica Neue", Arial, sans-serif';
+const LANES = [-2.4, 0, 2.4];
+const SPAWN_Z = -150;
+const TRACK_LEN = 320;
+const GATE_EVERY = 550; // MB zwischen zwei Security-Gates
+const FIRST_GATE = 260;
+const GATE_STOP_Z = -9; // hier hält das Tor vor dem Spieler an
+const MAX_LIVES = 3;
+// Tempo: gemütlicher Start, langsam schneller werdend
+const SPEED_START = 13;
+const SPEED_MAX = 30;
+const SPEED_RAMP = 0.15;
+const QUESTIONS = window.DPLAN_QUESTIONS || [];
+
+// Ab wie vielen MB eine Bedrohung auftaucht
+const UNLOCK_AT = { virus: 0, bug: 150, phishing: 400, spam: 650, ransom: 900 };
+const POWER = {
+  backup:   { label: 'BACKUP',   color: '#22a06b', msg: '+1 Netzwerk' },
+  cloud:    { label: 'CLOUD',    color: '#009fe3', msg: 'Cloud-Sync: Daten-Magnet!' },
+  firewall: { label: 'FIREWALL', color: '#e5603b', msg: 'Firewall: unverwundbar!' },
+};
+
+// ---------- Helfer ----------
+const $ = (id) => document.getElementById(id);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const shuffle = (arr) => {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+};
+const store = {
+  get(key, fallback) {
+    try {
+      const v = localStorage.getItem(key);
+      return v === null ? fallback : JSON.parse(v);
+    } catch { return fallback; }
+  },
+  set(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* z.B. privater Modus */ }
+  },
+};
+const fmt = (n) => Math.round(n).toLocaleString('de-CH');
+
+function rr(g, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+
+function canvasTex(w, h, draw) {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+
+// ---------- Sound (WebAudio, ohne Dateien) ----------
+let audio = null;
+let muted = store.get('dplan-cd-muted', false);
+function tone(freq, dur, type = 'square', vol = 0.05, slide = 0, delay = 0) {
+  if (muted) return;
+  try {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    const t = audio.currentTime + delay;
+    const o = audio.createOscillator();
+    const gain = audio.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), t + dur);
+    gain.gain.setValueAtTime(vol, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(gain).connect(audio.destination);
+    o.start(t);
+    o.stop(t + dur + 0.02);
+  } catch { /* Audio nicht verfügbar */ }
+}
+const sfx = {
+  lane: () => tone(520, 0.05, 'triangle', 0.03, 120),
+  jump: () => tone(330, 0.18, 'triangle', 0.06, 380),
+  bit: () => tone(1180, 0.07, 'triangle', 0.035, 240),
+  hit: () => tone(120, 0.35, 'sawtooth', 0.08, -60),
+  smash: () => tone(200, 0.2, 'sawtooth', 0.05, -150),
+  power: () => { tone(660, 0.08, 'triangle', 0.07); tone(990, 0.12, 'triangle', 0.07, 0, 0.08); },
+  gate: () => { tone(440, 0.1, 'triangle', 0.06); tone(660, 0.15, 'triangle', 0.06, 0, 0.1); },
+  correct: () => { tone(523, 0.1, 'triangle', 0.08); tone(659, 0.1, 'triangle', 0.08, 0, 0.1); tone(784, 0.18, 'triangle', 0.08, 0, 0.2); },
+  wrong: () => { tone(300, 0.15, 'square', 0.05); tone(220, 0.25, 'square', 0.05, 0, 0.15); },
+};
+
+// ---------- Renderer & Szene ----------
+const canvas = $('scene');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(C.bg);
+scene.fog = new THREE.Fog(C.bg, 45, 150);
+
+const camera = new THREE.PerspectiveCamera(62, 1, 0.1, 300);
+camera.position.set(0, 4.3, 7.8);
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0xaebdc9, 1.7));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+sun.position.set(5, 14, 6);
+sun.target.position.set(0, 0, -8);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+Object.assign(sun.shadow.camera, { left: -10, right: 10, top: 18, bottom: -18, near: 1, far: 50 });
+scene.add(sun, sun.target);
+
+// ---------- Strecke: Rechenzentrum ----------
+const floorTex = canvasTex(256, 256, (g, w, h) => {
+  g.fillStyle = '#f8fbfd';
+  g.fillRect(0, 0, w, h);
+  g.strokeStyle = '#cfe7f4';
+  g.lineWidth = 6;
+  g.strokeRect(0, 0, w, h);
+  g.fillStyle = '#e3f2fa';
+  for (let i = 0; i < 4; i++) g.fillRect(w / 2 - 3, i * 64 + 20, 6, 24);
+});
+floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
+floorTex.repeat.set(3, TRACK_LEN / 5);
+
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(8.4, TRACK_LEN),
+  new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.85 }),
+);
+floor.rotation.x = -Math.PI / 2;
+floor.position.z = -TRACK_LEN / 2 + 15;
+floor.receiveShadow = true;
+scene.add(floor);
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(120, TRACK_LEN),
+  new THREE.MeshStandardMaterial({ color: 0xdde7ee, roughness: 1 }),
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.set(0, -0.02, floor.position.z);
+ground.receiveShadow = true;
+scene.add(ground);
+
+const edgeMat = new THREE.MeshStandardMaterial({ color: C.blue, emissive: C.blue, emissiveIntensity: 0.35 });
+for (const x of [-4.3, 4.3]) {
+  const edge = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.2, TRACK_LEN), edgeMat);
+  edge.position.set(x, 0.1, floor.position.z);
+  scene.add(edge);
+}
+const laneLineMat = new THREE.MeshBasicMaterial({ color: 0xa8dcf3 });
+for (const x of [-1.2, 1.2]) {
+  const l = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.02, TRACK_LEN), laneLineMat);
+  l.position.set(x, 0.01, floor.position.z);
+  scene.add(l);
+}
+
+// Server-Racks links und rechts (die Vorderseite zeigt zur Strecke)
+const rackTex = canvasTex(128, 256, (g, w, h) => {
+  g.fillStyle = '#3e3f42';
+  g.fillRect(0, 0, w, h);
+  g.fillStyle = '#009fe3';
+  g.fillRect(0, 0, w, 14);
+  for (let y = 24; y < h - 10; y += 19) {
+    g.fillStyle = '#505155';
+    rr(g, 10, y, w - 20, 14, 3);
+    g.fill();
+    g.fillStyle = Math.random() < 0.7 ? '#5fd3ff' : '#4ade80';
+    g.fillRect(18, y + 5, 5, 4);
+    g.fillStyle = '#6b6c70';
+    g.fillRect(32, y + 6, 40 + Math.random() * 30, 2);
+  }
+});
+const rackSide = new THREE.MeshStandardMaterial({ color: 0x4a4b4e, roughness: 0.6 });
+const rackTop = new THREE.MeshStandardMaterial({ color: 0x5d5e61, roughness: 0.6 });
+const rackFront = new THREE.MeshStandardMaterial({ map: rackTex, roughness: 0.5, emissive: 0xffffff, emissiveMap: rackTex, emissiveIntensity: 0.25 });
+const rackGeo = new THREE.BoxGeometry(1.4, 3.6, 1.6);
+const RACK_GAP = 7;
+const RACK_COUNT = Math.ceil(165 / RACK_GAP);
+const racks = [];
+for (const side of [-1, 1]) {
+  // BoxGeometry-Flächen: +x, -x, +y, -y, +z, -z
+  const mats = side < 0
+    ? [rackFront, rackSide, rackTop, rackSide, rackSide, rackSide]
+    : [rackSide, rackFront, rackTop, rackSide, rackSide, rackSide];
+  for (let i = 0; i < RACK_COUNT; i++) {
+    const r = new THREE.Mesh(rackGeo, mats);
+    r.position.set(side * 5.6, 1.8, 10 - i * RACK_GAP);
+    r.castShadow = true;
+    r.receiveShadow = true;
+    scene.add(r);
+    racks.push(r);
+  }
+}
+// Kabelbrücken über der Strecke
+const beamMat = new THREE.MeshStandardMaterial({ color: 0x9c9da0, roughness: 0.5 });
+const beams = [];
+for (let i = 0; i < 6; i++) {
+  const b = new THREE.Group();
+  const bar = new THREE.Mesh(new THREE.BoxGeometry(12.6, 0.18, 0.5), beamMat);
+  const glow = new THREE.Mesh(new THREE.BoxGeometry(12.6, 0.05, 0.12), edgeMat);
+  glow.position.y = -0.11;
+  b.add(bar, glow);
+  b.position.set(0, 3.9, 10 - i * 28);
+  scene.add(b);
+  beams.push(b);
+}
+// Datenströme am Rand für Tempo-Gefühl
+const streamMat = new THREE.MeshBasicMaterial({ color: 0x5fd3ff });
+const streamGeo = new THREE.BoxGeometry(0.07, 0.07, 1.6);
+const streams = [];
+for (let i = 0; i < 26; i++) {
+  const s = new THREE.Mesh(streamGeo, streamMat);
+  s.position.set(pick([-3.95, 3.95, -4.65, 4.65]), rand(0.15, 0.35), rand(SPAWN_Z, 10));
+  scene.add(s);
+  streams.push(s);
+}
+
+// ---------- Spielfigur: das dp-Logo als Datenpaket ----------
+const logoTex = canvasTex(256, 256, (g, w, h) => {
+  const grad = g.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, '#c4c5c7');
+  grad.addColorStop(1, '#808184');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, w, h);
+  g.fillStyle = '#fff';
+  rr(g, 18, 18, w - 36, h - 36, 34);
+  g.fill();
+  g.fillStyle = '#009fe3';
+  g.font = `bold 128px ${FONT}`;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText('dp', w / 2, h / 2 + 6);
+});
+const frameMat = new THREE.MeshStandardMaterial({ color: 0xa3a4a7, roughness: 0.35, metalness: 0.25 });
+const logoMat = new THREE.MeshStandardMaterial({ map: logoTex, roughness: 0.4 });
+const PLAYER_SIZE = 1.2;
+const playerMesh = new THREE.Mesh(
+  new RoundedBoxGeometry(PLAYER_SIZE, PLAYER_SIZE, PLAYER_SIZE, 4, 0.18),
+  [frameMat, frameMat, logoMat, frameMat, logoMat, frameMat],
+);
+playerMesh.castShadow = true;
+const playerGroup = new THREE.Group();
+playerMesh.position.y = PLAYER_SIZE / 2;
+playerGroup.add(playerMesh);
+const shield = new THREE.Mesh(
+  new THREE.SphereGeometry(1.05, 24, 16),
+  new THREE.MeshBasicMaterial({ color: C.fire, transparent: true, opacity: 0.22, depthWrite: false }),
+);
+shield.position.y = PLAYER_SIZE / 2;
+shield.visible = false;
+const magnet = new THREE.Mesh(
+  new THREE.TorusGeometry(1.0, 0.05, 8, 40),
+  new THREE.MeshBasicMaterial({ color: C.blue, transparent: true, opacity: 0.7 }),
+);
+magnet.rotation.x = Math.PI / 2;
+magnet.position.y = 0.15;
+magnet.visible = false;
+playerGroup.add(shield, magnet);
+scene.add(playerGroup);
+
+const player = { lane: 1, x: 0, y: 0, vy: 0, spin: 0, invuln: 0, tumble: 0 };
+
+// ---------- Bedrohungen ----------
+const virusGeo = (() => {
+  const parts = [new THREE.IcosahedronGeometry(0.46, 1)];
+  const dirs = new THREE.IcosahedronGeometry(1, 0).getAttribute('position');
+  const up = new THREE.Vector3(0, 1, 0);
+  const seen = new Set();
+  for (let i = 0; i < dirs.count; i++) {
+    const v = new THREE.Vector3().fromBufferAttribute(dirs, i).normalize();
+    const key = v.toArray().map((n) => n.toFixed(2)).join();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const q = new THREE.Quaternion().setFromUnitVectors(up, v);
+    const cone = new THREE.CylinderGeometry(0.05, 0.08, 0.3, 6).toNonIndexed();
+    cone.translate(0, 0.58, 0);
+    cone.applyQuaternion(q);
+    const tip = new THREE.SphereGeometry(0.1, 8, 6).toNonIndexed();
+    tip.translate(0, 0.76, 0);
+    tip.applyQuaternion(q);
+    parts.push(cone, tip);
+  }
+  return mergeGeometries(parts);
+})();
+const eyeGeo = mergeGeometries([
+  new THREE.SphereGeometry(0.14, 12, 8).translate(-0.18, 0.1, 0.38),
+  new THREE.SphereGeometry(0.14, 12, 8).translate(0.18, 0.1, 0.38),
+]);
+const pupilGeo = mergeGeometries([
+  new THREE.SphereGeometry(0.07, 10, 8).translate(-0.18, 0.08, 0.5),
+  new THREE.SphereGeometry(0.07, 10, 8).translate(0.18, 0.08, 0.5),
+]);
+const M = {
+  virus: new THREE.MeshStandardMaterial({ color: C.red, roughness: 0.45 }),
+  eye: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3 }),
+  pupil: new THREE.MeshStandardMaterial({ color: 0x1f2933, roughness: 0.3 }),
+  bug: new THREE.MeshStandardMaterial({ color: C.green, roughness: 0.4 }),
+  bugDark: new THREE.MeshStandardMaterial({ color: 0x17694a, roughness: 0.5 }),
+  ransom: new THREE.MeshStandardMaterial({ color: C.purple, roughness: 0.4 }),
+  metal: new THREE.MeshStandardMaterial({ color: 0xb8b9bc, roughness: 0.25, metalness: 0.6 }),
+  orange: new THREE.MeshStandardMaterial({ color: C.orange, roughness: 0.5 }),
+  line: new THREE.MeshStandardMaterial({ color: 0x5d5e61 }),
+  spam: new THREE.MeshStandardMaterial({ color: 0x9c9da0, roughness: 0.6 }),
+};
+
+const ransomFace = new THREE.MeshStandardMaterial({
+  roughness: 0.4,
+  map: canvasTex(256, 210, (g, w, h) => {
+    g.fillStyle = '#7c5cd6';
+    g.fillRect(0, 0, w, h);
+    g.fillStyle = '#2b2140';
+    g.beginPath();
+    g.arc(w / 2, 78, 26, 0, Math.PI * 2);
+    g.fill();
+    g.beginPath();
+    g.moveTo(w / 2 - 14, 90);
+    g.lineTo(w / 2 + 14, 90);
+    g.lineTo(w / 2 + 22, 140);
+    g.lineTo(w / 2 - 22, 140);
+    g.closePath();
+    g.fill();
+    g.fillStyle = '#fff';
+    g.font = `bold 26px ${FONT}`;
+    g.textAlign = 'center';
+    g.fillText('RANSOMWARE', w / 2, 186);
+  }),
+});
+const envelopeFace = (color, label) => new THREE.MeshStandardMaterial({
+  roughness: 0.5,
+  map: canvasTex(256, 170, (g, w, h) => {
+    g.fillStyle = color;
+    g.fillRect(0, 0, w, h);
+    g.strokeStyle = '#fff';
+    g.lineWidth = 9;
+    g.lineJoin = 'round';
+    g.beginPath();
+    g.moveTo(14, 14);
+    g.lineTo(w / 2, h * 0.58);
+    g.lineTo(w - 14, 14);
+    g.stroke();
+    if (label) {
+      g.fillStyle = '#fff';
+      g.font = `bold 30px ${FONT}`;
+      g.textAlign = 'center';
+      g.fillText(label, w / 2, h - 18);
+    }
+  }),
+});
+const phishFace = envelopeFace('#f08a24', 'PHISHING');
+const spamFace = new THREE.MeshStandardMaterial({
+  roughness: 0.6,
+  map: canvasTex(512, 96, (g, w, h) => {
+    g.fillStyle = '#9c9da0';
+    g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 4; i++) {
+      const x = 20 + i * 124;
+      g.fillStyle = '#fff';
+      rr(g, x, 22, 84, 54, 6);
+      g.fill();
+      g.strokeStyle = '#9c9da0';
+      g.lineWidth = 5;
+      g.beginPath();
+      g.moveTo(x + 6, 28);
+      g.lineTo(x + 42, 54);
+      g.lineTo(x + 78, 28);
+      g.stroke();
+      g.fillStyle = '#e5484d';
+      g.beginPath();
+      g.arc(x + 84, 24, 13, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = '#fff';
+      g.font = `bold 18px ${FONT}`;
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText('!', x + 84, 25);
+    }
+  }),
+});
+
+const G = {
+  bugBody: new THREE.SphereGeometry(0.5, 20, 14).scale(1.1, 0.75, 1.5),
+  bugHead: new THREE.SphereGeometry(0.3, 16, 12),
+  bugLegs: mergeGeometries([-1, 0, 1].flatMap((i) => [-1, 1].map((s) =>
+    new THREE.BoxGeometry(0.55, 0.06, 0.06).translate(s * 0.75, 0.12, i * 0.38)))),
+  ransomBody: new RoundedBoxGeometry(1.7, 1.4, 0.7, 3, 0.12),
+  ransomShackle: new THREE.TorusGeometry(0.5, 0.13, 10, 24, Math.PI),
+  envelope: new THREE.BoxGeometry(1.5, 1.0, 0.14),
+  hookLine: new THREE.CylinderGeometry(0.02, 0.02, 2.4, 6),
+  hook: new THREE.TorusGeometry(0.16, 0.035, 6, 16, Math.PI * 1.3),
+  spam: new RoundedBoxGeometry(4.4, 0.85, 0.5, 2, 0.08),
+  bit: new THREE.OctahedronGeometry(0.28),
+};
+const bitMat = new THREE.MeshStandardMaterial({ color: C.blue, emissive: C.blueDark, emissiveIntensity: 0.6, roughness: 0.3 });
+
+function shadowed(obj) {
+  obj.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+  return obj;
+}
+
+function buildObstacle(type) {
+  const g = new THREE.Group();
+  const spin = new THREE.Group();
+  g.add(spin);
+  let dims;
+  if (type === 'virus') {
+    spin.add(new THREE.Mesh(virusGeo, M.virus));
+    spin.position.y = 0.6;
+    const eyes = new THREE.Group();
+    eyes.add(new THREE.Mesh(eyeGeo, M.eye), new THREE.Mesh(pupilGeo, M.pupil));
+    eyes.position.y = 0.6;
+    g.add(eyes);
+    dims = { w: 1.1, d: 1.0, yMin: 0, yMax: 1.05 };
+  } else if (type === 'bug') {
+    const body = new THREE.Mesh(G.bugBody, M.bug);
+    body.position.y = 0.38;
+    const head = new THREE.Mesh(G.bugHead, M.bugDark);
+    head.position.set(0, 0.42, 0.75);
+    const legs = new THREE.Mesh(G.bugLegs, M.bugDark);
+    spin.add(body, head, legs);
+    dims = { w: 1.3, d: 1.5, yMin: 0, yMax: 0.72 };
+  } else if (type === 'ransom') {
+    const body = new THREE.Mesh(G.ransomBody, [M.ransom, M.ransom, M.ransom, M.ransom, ransomFace, M.ransom]);
+    body.position.y = 0.7;
+    const shackle = new THREE.Mesh(G.ransomShackle, M.metal);
+    shackle.position.y = 1.4;
+    spin.add(body, shackle);
+    dims = { w: 1.7, d: 0.8, yMin: 0, yMax: 2.1 };
+  } else if (type === 'phishing') {
+    const env = new THREE.Mesh(G.envelope, [M.orange, M.orange, M.orange, M.orange, phishFace, M.orange]);
+    const line = new THREE.Mesh(G.hookLine, M.line);
+    line.position.y = 1.75;
+    const hook = new THREE.Mesh(G.hook, M.metal);
+    hook.position.set(-0.1, 0.55, 0.1);
+    hook.rotation.z = Math.PI;
+    spin.add(env, line, hook);
+    spin.position.y = 1.3;
+    dims = { w: 1.5, d: 0.4, yMin: 0.8, yMax: 1.8 };
+  } else if (type === 'spam') {
+    const wall = new THREE.Mesh(G.spam, [M.spam, M.spam, M.spam, M.spam, spamFace, M.spam]);
+    wall.position.y = 0.43;
+    spin.add(wall);
+    dims = { w: 4.4, d: 0.5, yMin: 0, yMax: 0.85 };
+  }
+  return { mesh: shadowed(g), spin, ...dims };
+}
+
+const labelTexCache = {};
+function labelTex(key) {
+  if (!labelTexCache[key]) {
+    const def = POWER[key];
+    labelTexCache[key] = canvasTex(256, 80, (g, w, h) => {
+      g.fillStyle = def.color;
+      rr(g, 4, 4, w - 8, h - 8, 36);
+      g.fill();
+      g.fillStyle = '#fff';
+      g.font = `bold 38px ${FONT}`;
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText(def.label, w / 2, h / 2 + 2);
+    });
+  }
+  return labelTexCache[key];
+}
+
+// ---------- Security-Gate ----------
+const letterTex = ['A', 'B', 'C'].map((ch) => canvasTex(128, 128, (g, w, h) => {
+  g.fillStyle = '#009fe3';
+  rr(g, 6, 6, w - 12, h - 12, 22);
+  g.fill();
+  g.fillStyle = '#fff';
+  g.font = `bold 84px ${FONT}`;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(ch, w / 2, h / 2 + 4);
+}));
+const gateSignTex = canvasTex(512, 80, (g, w, h) => {
+  g.fillStyle = '#8c8c8f';
+  g.fillRect(0, 0, w, h);
+  g.fillStyle = '#fff';
+  g.font = `bold 44px ${FONT}`;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText('SECURITY-GATE', w / 2, h / 2 + 2);
+});
+const postMat = new THREE.MeshStandardMaterial({ color: C.blue, roughness: 0.4, emissive: C.blue, emissiveIntensity: 0.2 });
+
+function buildGate() {
+  const g = new THREE.Group();
+  for (const x of [-3.6, -1.2, 1.2, 3.6]) {
+    const p = new THREE.Mesh(new THREE.BoxGeometry(0.22, 3.4, 0.22), postMat);
+    p.position.set(x, 1.7, 0);
+    g.add(p);
+  }
+  const beam = new THREE.Mesh(new THREE.BoxGeometry(7.6, 0.3, 0.3), postMat);
+  beam.position.y = 3.4;
+  g.add(beam);
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 0.66), new THREE.MeshBasicMaterial({ map: gateSignTex }));
+  sign.position.set(0, 3.95, 0);
+  g.add(sign);
+  const curtains = [];
+  LANES.forEach((x, i) => {
+    const letter = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.9), new THREE.MeshBasicMaterial({ map: letterTex[i], transparent: true }));
+    letter.position.set(x, 2.75, 0.02);
+    const curtain = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.25, 2.2),
+      new THREE.MeshBasicMaterial({ color: C.blue, transparent: true, opacity: 0.14, side: THREE.DoubleSide, depthWrite: false }),
+    );
+    curtain.position.set(x, 1.1, 0);
+    g.add(letter, curtain);
+    curtains.push(curtain);
+  });
+  g.traverse((o) => { if (o.isMesh && o.material === postMat) o.castShadow = true; });
+  return { mesh: g, curtains };
+}
+
+// ---------- Partikel ----------
+const particleGeo = new THREE.BoxGeometry(0.16, 0.16, 0.16);
+const particles = [];
+for (let i = 0; i < 90; i++) {
+  const p = new THREE.Mesh(particleGeo, new THREE.MeshBasicMaterial({ color: C.blue, transparent: true }));
+  p.visible = false;
+  scene.add(p);
+  particles.push({ mesh: p, v: new THREE.Vector3(), life: 0, max: 1 });
+}
+let particleIdx = 0;
+function burst(pos, color, n = 16, power = 6) {
+  for (let i = 0; i < n; i++) {
+    const p = particles[particleIdx++ % particles.length];
+    p.mesh.visible = true;
+    p.mesh.position.copy(pos);
+    p.mesh.material.color.setHex(color);
+    p.v.set(rand(-1, 1), rand(0.2, 1.4), rand(-1, 1)).multiplyScalar(power);
+    p.life = p.max = rand(0.4, 0.9);
+  }
+}
+
+// ---------- Spielzustand ----------
+// gate: Spiel steht vor einem Security-Gate still (gatePhase: choose | reveal)
+let state = 'menu'; // menu | playing | gate | paused | dying | over
+let speed = 10, dist = 0, score = 0, lives = MAX_LIVES, elapsed = 0;
+let rowCursor = 0, nextGateAt = FIRST_GATE, gate = null;
+let gatePending = false, gatePhase = null;
+let gatesAsked = 0, gatesCorrect = 0, shake = 0, dyingT = 0;
+let powers = { cloud: 0, firewall: 0 };
+let objects = [];
+let deck = [];
+
+function clearObjects() {
+  for (const o of objects) scene.remove(o.mesh);
+  objects = [];
+  if (gate) scene.remove(gate.mesh);
+  gate = null;
+}
+
+function resetGame() {
+  clearObjects();
+  speed = SPEED_START; dist = 0; score = 0; lives = MAX_LIVES; elapsed = 0;
+  rowCursor = 45; nextGateAt = FIRST_GATE;
+  gatePending = false; gatePhase = null;
+  gatesAsked = 0; gatesCorrect = 0; shake = 0;
+  powers = { cloud: 0, firewall: 0 };
+  Object.assign(player, { lane: 1, x: 0, y: 0, vy: 0, spin: 0, invuln: 0, tumble: 0 });
+  playerGroup.rotation.set(0, 0, 0);
+  playerMesh.rotation.set(0, 0, 0);
+  playerGroup.visible = true;
+  $('gatePanel').classList.add('hidden');
+}
+
+function newGame() {
+  resetGame();
+  state = 'playing';
+  $('hud').classList.remove('hidden');
+  show(null);
+  hudCache = {};
+}
+
+function addObstacle(type, lane, z = SPAWN_Z) {
+  const o = buildObstacle(type);
+  o.kind = 'obs';
+  o.type = type;
+  o.t = 0;
+  o.phase = Math.random() * Math.PI * 2;
+  o.x = type === 'spam' ? (LANES[lane] + LANES[lane + 1]) / 2 : LANES[lane];
+  o.baseX = o.x;
+  o.mesh.position.set(o.x, 0, z);
+  scene.add(o.mesh);
+  objects.push(o);
+}
+
+function addBits(lane, z = SPAWN_Z, count = 5, arc = false) {
+  for (let i = 0; i < count; i++) {
+    const m = new THREE.Mesh(G.bit, bitMat);
+    const y = arc ? 0.8 + Math.sin((i / (count - 1)) * Math.PI) * 1.6 : 0.8;
+    m.position.set(LANES[lane], y, z - i * 2.2);
+    m.castShadow = true;
+    scene.add(m);
+    objects.push({ kind: 'bit', mesh: m, x: LANES[lane] });
+  }
+}
+
+function addPower(lane, z = SPAWN_Z) {
+  const keys = Object.keys(POWER);
+  const type = lives < MAX_LIVES && Math.random() < 0.45 ? 'backup' : pick(keys);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: labelTex(type) }));
+  sprite.scale.set(2.0, 0.62, 1);
+  sprite.position.set(LANES[lane], 1.1, z);
+  scene.add(sprite);
+  objects.push({ kind: 'pow', type, mesh: sprite, x: LANES[lane], t: 0 });
+}
+
+function spawnRow() {
+  const avail = Object.keys(UNLOCK_AT).filter((t) => dist >= UNLOCK_AT[t]);
+  const lanes = shuffle([0, 1, 2]);
+  let free = lanes[2];
+  if (avail.includes('spam') && Math.random() < 0.18) {
+    const left = Math.random() < 0.5 ? 0 : 1;
+    addObstacle('spam', left);
+    free = left === 0 ? 2 : 0;
+    addBits(left, SPAWN_Z + 4, 4, true);
+  } else {
+    const single = avail.filter((t) => t !== 'spam');
+    const type = pick(single);
+    addObstacle(type, lanes[0]);
+    if (type !== 'phishing' && dist > 600 && Math.random() < 0.35) {
+      const second = pick(single.filter((t) => t !== 'phishing'));
+      addObstacle(second, lanes[1]);
+    } else {
+      free = Math.random() < 0.5 ? lanes[1] : lanes[2];
+    }
+  }
+  if (Math.random() < 0.65) addBits(free, SPAWN_Z - 3);
+  if (Math.random() < 0.07) addPower(free, SPAWN_Z - 14);
+}
+
+// ---------- Security-Gate Ablauf ----------
+let currentQ = null;
+let gateAnswers = [];
+
+// Ablauf: Hindernisse abwarten → Tor taucht auf → Spiel hält an (choose)
+// → Antwort wählen (reveal, Erklärung lesen) → «Weiter» → durchs Tor fahren
+function spawnGate() {
+  if (!QUESTIONS.length) { nextGateAt = Infinity; return; }
+  if (!deck.length) deck = shuffle(QUESTIONS.slice());
+  currentQ = deck.pop();
+  gateAnswers = shuffle(currentQ.a.map((text, i) => ({ text, ok: i === 0 })));
+  gate = buildGate();
+  gate.mesh.position.z = -75;
+  scene.add(gate.mesh);
+  gatesAsked++;
+  const box = $('gateOpts');
+  box.innerHTML = '';
+  const where = ['links', 'Mitte', 'rechts'];
+  gateAnswers.forEach((a, i) => {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'gate-opt';
+    const b = document.createElement('b');
+    b.textContent = 'ABC'[i];
+    const s = document.createElement('span');
+    s.textContent = a.text;
+    const sm = document.createElement('small');
+    sm.textContent = where[i];
+    el.append(b, s, sm);
+    el.addEventListener('click', () => {
+      if (gatePhase !== 'choose') return;
+      player.lane = i;
+      chooseAnswer();
+    });
+    box.appendChild(el);
+  });
+}
+
+function startChoose() {
+  state = 'gate';
+  gatePhase = 'choose';
+  $('gateQ').textContent = currentQ.q;
+  $('gateHint').classList.remove('hidden');
+  $('gateResult').classList.add('hidden');
+  $('gatePanel').classList.remove('hidden');
+  highlightLane();
+  sfx.gate();
+}
+
+function highlightLane() {
+  [...$('gateOpts').children].forEach((el, i) => el.classList.toggle('active', i === player.lane));
+  if (gate) gate.curtains.forEach((c, i) => { c.material.opacity = i === player.lane ? 0.3 : 0.12; });
+}
+
+function chooseAnswer() {
+  if (gatePhase !== 'choose') return;
+  gatePhase = 'reveal';
+  const lane = player.lane;
+  const ok = gateAnswers[lane].ok;
+  [...$('gateOpts').children].forEach((el, i) => {
+    el.disabled = true;
+    el.classList.remove('active');
+    el.classList.add(gateAnswers[i].ok ? 'correct' : i === lane ? 'wrong' : 'dim');
+    gate.curtains[i].material.color.setHex(gateAnswers[i].ok ? C.green : i === lane ? C.red : C.grey);
+    gate.curtains[i].material.opacity = gateAnswers[i].ok || i === lane ? 0.35 : 0.08;
+  });
+  const tip = $('gateTip');
+  tip.className = 'gate-tip' + (ok ? '' : ' bad');
+  tip.textContent = '';
+  const strong = document.createElement('strong');
+  if (ok) {
+    gatesCorrect++;
+    const bonus = 250 * gatesCorrect;
+    score += bonus;
+    lives = Math.min(MAX_LIVES, lives + 1);
+    strong.textContent = `Richtig! +${fmt(bonus)} Punkte und +1 Netzwerk`;
+    flashScreen('rgba(34,160,107,0.45)');
+    sfx.correct();
+  } else {
+    lives--;
+    strong.textContent = 'Leider falsch: −1 Netzwerk';
+    flashScreen('rgba(229,72,77,0.4)');
+    sfx.wrong();
+  }
+  tip.append(strong, currentQ.tip);
+  $('gateHint').classList.add('hidden');
+  $('gateResult').classList.remove('hidden');
+  $('btnGateGo').textContent = lives > 0 ? 'Weiter' : 'Ergebnis ansehen';
+  revealAt = performance.now();
+  // verzögert, damit die Bestätigungstaste nicht gleich «Weiter» auslöst
+  setTimeout(() => $('btnGateGo').focus({ preventScroll: true }), 400);
+}
+
+let revealAt = 0;
+function leaveGate() {
+  if (gatePhase !== 'reveal' || performance.now() - revealAt < 400) return;
+  gatePhase = null;
+  $('gatePanel').classList.add('hidden');
+  nextGateAt = dist + GATE_EVERY;
+  rowCursor = 40;
+  if (lives <= 0) {
+    startDying();
+    return;
+  }
+  state = 'playing';
+  player.invuln = 1;
+}
+
+// ---------- Treffer & Power-ups ----------
+function damage() {
+  lives--;
+  player.invuln = 2;
+  shake = 0.45;
+  flashScreen('rgba(229,72,77,0.45)');
+  const hud = $('hud');
+  hud.classList.remove('hit');
+  void hud.offsetWidth;
+  hud.classList.add('hit');
+  sfx.hit();
+  if (lives <= 0) startDying();
+  else toast('Netzwerk getroffen!', '#e5484d');
+}
+
+function startDying() {
+  state = 'dying';
+  dyingT = 1.6;
+  player.vy = 9;
+  shake = 0.45;
+  burst(playerGroup.position.clone().setY(0.8), C.blue, 30, 8);
+  burst(playerGroup.position.clone().setY(0.8), C.grey, 20, 7);
+}
+
+function applyPower(o) {
+  const def = POWER[o.type];
+  if (o.type === 'backup') {
+    if (lives < MAX_LIVES) lives++;
+    else score += 200;
+  }
+  if (o.type === 'cloud') powers.cloud = 10;
+  if (o.type === 'firewall') powers.firewall = 6;
+  toast(def.msg, def.color);
+  burst(o.mesh.position, parseInt(def.color.slice(1), 16), 18, 5);
+  sfx.power();
+}
+
+// ---------- Update ----------
+const tmpV = new THREE.Vector3();
+function update(dt) {
+  const playing = state === 'playing';
+  const dying = state === 'dying';
+
+  const atGate = state === 'gate';
+  if (playing) {
+    elapsed += dt;
+    const target = Math.min(SPEED_MAX, SPEED_START + elapsed * SPEED_RAMP);
+    speed += (target - speed) * Math.min(1, dt * 2);
+  } else if (atGate) {
+    // sanft abbremsen, sodass das Tor bei GATE_STOP_Z stehen bleibt
+    const left = gate ? Math.max(0, GATE_STOP_Z - gate.mesh.position.z) : 0;
+    speed = Math.min(speed, left * 3.2);
+  } else if (dying) {
+    speed = Math.max(0, speed - dt * 30);
+  } else if (state === 'menu') {
+    speed = 9;
+  }
+  const dz = speed * dt;
+
+  // Welt bewegen
+  floorTex.offset.y += dz / 5;
+  for (const r of racks) {
+    r.position.z += dz;
+    if (r.position.z > 14) r.position.z -= RACK_COUNT * RACK_GAP;
+  }
+  for (const b of beams) {
+    b.position.z += dz;
+    if (b.position.z > 14) b.position.z -= 6 * 28;
+  }
+  for (const s of streams) {
+    s.position.z += dz * 1.8 + dt * 6;
+    if (s.position.z > 12) s.position.z = SPAWN_Z + rand(0, 20);
+  }
+
+  for (const p of particles) {
+    if (p.life <= 0) continue;
+    p.life -= dt;
+    p.v.y -= 14 * dt;
+    p.mesh.position.addScaledVector(p.v, dt);
+    p.mesh.rotation.x += dt * 6;
+    p.mesh.material.opacity = Math.max(0, p.life / p.max);
+    if (p.life <= 0) p.mesh.visible = false;
+  }
+
+  updatePlayer(dt);
+
+  if (!playing && !dying && !atGate) return;
+
+  if (playing) {
+    dist += dz;
+    score += dz;
+    for (const k in powers) powers[k] = Math.max(0, powers[k] - dt);
+    player.invuln = Math.max(0, player.invuln - dt);
+
+    rowCursor -= dz;
+    if (rowCursor <= 0) {
+      spawnRow();
+      rowCursor = rand(0.9, 1.3) * Math.max(15, speed * 0.95);
+    }
+    // Vor dem Gate: keine neuen Hindernisse, weit entfernte verschwinden im Nebel
+    if (!gate && !gatePending && dist >= nextGateAt) {
+      gatePending = true;
+      rowCursor = Infinity;
+      for (const o of objects) if (o.kind === 'obs' && o.mesh.position.z < -70) o.dead = true;
+    }
+    if (gatePending && !objects.some((o) => !o.dead && o.kind === 'obs' && o.mesh.position.z < 1.5)) {
+      gatePending = false;
+      spawnGate();
+    }
+  }
+
+  if (gate) {
+    gate.mesh.position.z += dz;
+    if (playing && !gate.stopped && gate.mesh.position.z >= GATE_STOP_Z - 14) {
+      gate.stopped = true;
+      startChoose();
+    }
+    if (gate.mesh.position.z > 14) {
+      scene.remove(gate.mesh);
+      gate = null;
+    }
+  }
+
+  // Objekte bewegen und Kollisionen prüfen
+  const px = player.x;
+  const py = player.y;
+  for (const o of objects) {
+    o.mesh.position.z += dz;
+    const z = o.mesh.position.z;
+    if (o.kind === 'obs') {
+      o.t += dt;
+      if (o.type === 'virus') o.spin.rotation.set(o.t * 1.4, o.t * 2, 0);
+      if (o.type === 'bug') {
+        o.x = o.baseX + Math.sin(o.t * 3 + o.phase) * 0.35;
+        o.spin.rotation.y = Math.cos(o.t * 3 + o.phase) * 0.35;
+      }
+      if (o.type === 'phishing') {
+        if (z > -60) o.x = clamp(o.baseX + Math.sin(o.t * 1.4 + o.phase) * 2.6, -2.4, 2.4);
+        o.spin.position.y = 1.3 + Math.sin(o.t * 3) * 0.12;
+        o.spin.rotation.z = Math.sin(o.t * 2.5) * 0.15;
+      }
+      if (o.type === 'ransom') o.spin.rotation.y = Math.sin(o.t * 1.5) * 0.25;
+      o.mesh.position.x = o.x;
+      // Hitbox bewusst etwas kleiner als die Figur – knappe Ausweichmanöver sollen gelingen
+      if (playing && Math.abs(z) < o.d / 2 + 0.45 && Math.abs(o.x - px) < o.w / 2 + 0.38 &&
+          py < o.yMax && py + PLAYER_SIZE > o.yMin) {
+        if (powers.firewall > 0) {
+          o.dead = true;
+          score += 50;
+          burst(tmpV.set(o.x, 0.8, 0), C.fire, 18, 7);
+          sfx.smash();
+        } else if (player.invuln <= 0) {
+          o.dead = true;
+          burst(tmpV.set(o.x, 0.8, 0), C.red, 16, 6);
+          damage();
+        }
+      }
+    } else if (o.kind === 'bit') {
+      o.mesh.rotation.y += dt * 3;
+      if (playing && powers.cloud > 0 && z > -16 && z < 1) {
+        const k = Math.min(1, dt * 7);
+        o.x += (px - o.x) * k;
+        o.mesh.position.y += (py + 0.6 - o.mesh.position.y) * k;
+        o.mesh.position.x = o.x;
+      }
+      const dy = o.mesh.position.y - (py + 0.6);
+      if (playing && Math.abs(z) < 0.9 && Math.abs(o.x - px) < 0.9 && Math.abs(dy) < 1.1) {
+        o.dead = true;
+        score += 25;
+        burst(o.mesh.position, C.blue, 5, 3);
+        sfx.bit();
+      }
+    } else if (o.kind === 'pow') {
+      o.t += dt;
+      o.mesh.position.y = 1.1 + Math.sin(o.t * 4) * 0.15;
+      if (playing && Math.abs(z) < 1 && Math.abs(o.x - px) < 1.1 && py < 1.6) {
+        o.dead = true;
+        applyPower(o);
+      }
+    }
+    if (z > 12) o.dead = true;
+  }
+  if (objects.some((o) => o.dead)) {
+    objects = objects.filter((o) => {
+      if (o.dead) scene.remove(o.mesh);
+      return !o.dead;
+    });
+  }
+
+  if (dying) {
+    dyingT -= dt;
+    if (dyingT <= 0) showGameOver();
+  }
+}
+
+function updatePlayer(dt) {
+  const t = performance.now() / 1000;
+  if (state === 'menu') {
+    player.x = Math.sin(t * 0.8) * 2.4;
+    player.y = 0.25 + Math.sin(t * 3) * 0.15;
+    playerMesh.rotation.y = Math.sin(t * 0.8) * 0.4;
+  } else {
+    const targetX = LANES[player.lane];
+    player.x += (targetX - player.x) * Math.min(1, dt * 14);
+    if (player.y > 0 || player.vy > 0) {
+      player.vy -= 32 * dt;
+      player.y += player.vy * dt;
+      if (state === 'playing') player.spin = Math.min(1, player.spin + dt / 0.69);
+      if (player.y <= 0) {
+        player.y = 0;
+        player.vy = 0;
+        player.spin = 0;
+      }
+    }
+    playerMesh.rotation.x = -player.spin * Math.PI * 2;
+    playerMesh.rotation.y = 0;
+    playerGroup.rotation.z = (player.x - targetX) * 0.12;
+    if (state === 'dying') {
+      player.tumble += dt;
+      playerMesh.rotation.x = -player.tumble * 8;
+      playerMesh.rotation.z = player.tumble * 5;
+      playerGroup.visible = dyingT > 0.4 ? true : Math.floor(t * 20) % 2 === 0;
+    } else {
+      playerGroup.visible = player.invuln > 0 ? Math.floor(t * 16) % 2 === 0 : true;
+    }
+  }
+  playerGroup.position.set(player.x, player.y, 0);
+  shield.visible = powers.firewall > 0;
+  shield.material.opacity = 0.16 + Math.sin(t * 10) * 0.06;
+  magnet.visible = powers.cloud > 0;
+  magnet.rotation.z = t * 4;
+  magnet.scale.setScalar(1 + Math.sin(t * 8) * 0.08);
+}
+
+function updateCamera(dt) {
+  const narrow = camera.aspect < 0.8;
+  const tx = player.x * (narrow ? 0.25 : 0.55);
+  const ty = (narrow ? 5.2 : 4.3) + player.y * 0.3;
+  const tz = narrow ? 10.5 : 7.8;
+  const k = Math.min(1, dt * 6);
+  camera.position.x += (tx - camera.position.x) * k;
+  camera.position.y += (ty - camera.position.y) * k;
+  camera.position.z += (tz - camera.position.z) * k;
+  if (shake > 0) {
+    shake = Math.max(0, shake - dt);
+    camera.position.x += rand(-1, 1) * shake * 0.6;
+    camera.position.y += rand(-1, 1) * shake * 0.6;
+  }
+  camera.lookAt(player.x * 0.35, 1.1 + player.y * 0.2, -8);
+}
+
+// ---------- HUD & Meldungen ----------
+let hudCache = {};
+function setText(id, value) {
+  if (hudCache[id] === value) return;
+  hudCache[id] = value;
+  $(id).textContent = value;
+}
+function updateHud() {
+  if (state === 'menu') return;
+  setText('hudScore', fmt(score));
+  setText('hudDist', fmt(dist) + ' MB');
+  const livesHtml = Array.from({ length: MAX_LIVES }, (_, i) => `<i class="${i < lives ? '' : 'off'}"></i>`).join('');
+  if (hudCache.lives !== livesHtml) {
+    hudCache.lives = livesHtml;
+    $('hudLives').innerHTML = livesHtml;
+  }
+  const chips = Object.keys(powers)
+    .filter((k) => powers[k] > 0)
+    .map((k) => `<span class="chip" style="background:${POWER[k].color}">${POWER[k].label} ${Math.ceil(powers[k])}s</span>`)
+    .join('');
+  if (hudCache.powers !== chips) {
+    hudCache.powers = chips;
+    $('hudPowers').innerHTML = chips;
+  }
+}
+
+function toast(text, color) {
+  const el = $('toast');
+  el.textContent = text;
+  el.style.background = color;
+  el.classList.remove('hidden');
+  el.style.animation = 'none';
+  void el.offsetWidth;
+  el.style.animation = '';
+}
+function flashScreen(color) {
+  const el = $('flash');
+  el.style.background = color;
+  el.classList.remove('go');
+  void el.offsetWidth;
+  el.classList.add('go');
+}
+
+// ---------- Overlays ----------
+const OVERLAYS = { menu: 'ovMenu', pause: 'ovPause', over: 'ovOver', scores: 'ovScores' };
+function show(name) {
+  for (const k in OVERLAYS) $(OVERLAYS[k]).classList.toggle('hidden', k !== name);
+  const btn = name && $(OVERLAYS[name]).querySelector('.btn.primary:not(.hidden)');
+  if (btn) btn.focus({ preventScroll: true });
+}
+
+const SCORE_KEY = 'dplan-runner-scores';
+const loadScores = () => store.get(SCORE_KEY, []);
+const qualifies = (s) => {
+  const list = loadScores();
+  return s > 0 && (list.length < 10 || s > list[list.length - 1].score);
+};
+function renderScores(ol, highlight = -1) {
+  const list = loadScores();
+  ol.innerHTML = '';
+  if (!list.length) {
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = 'Noch keine Einträge – sei die erste Person auf der Liste!';
+    ol.appendChild(li);
+    return;
+  }
+  list.forEach((e, i) => {
+    const li = document.createElement('li');
+    if (i === highlight) li.className = 'me';
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = e.name;
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    meta.textContent = `${fmt(e.dist)} MB`;
+    const pts = document.createElement('span');
+    pts.className = 'pts';
+    pts.textContent = fmt(e.score);
+    li.append(name, meta, pts);
+    ol.appendChild(li);
+  });
+}
+
+function showGameOver() {
+  state = 'over';
+  $('gatePanel').classList.add('hidden');
+  $('overScore').textContent = fmt(score);
+  $('overDist').textContent = fmt(dist);
+  $('overQuiz').textContent = `${gatesCorrect}/${gatesAsked}`;
+  let msg;
+  if (dist >= 3000) msg = 'Wahnsinn! Deine Daten kommen immer sicher ans Ziel.';
+  else if (dist >= 1500) msg = 'Starke Leistung – fast schon Glasfaser-Tempo!';
+  else if (dist >= 700) msg = 'Gut unterwegs! Die nächsten Gates warten.';
+  else msg = 'Paketverlust passiert – einfach nochmal senden!';
+  $('overMsg').textContent = msg;
+  const canSave = qualifies(score);
+  $('saveForm').classList.toggle('hidden', !canSave);
+  $('nameInput').value = store.get('dplan-cd-name', '');
+  renderScores($('overScores'));
+  show('over');
+  if (canSave) $('nameInput').focus({ preventScroll: true });
+}
+
+$('saveForm').addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  const name = $('nameInput').value.trim().slice(0, 18);
+  if (!name) return;
+  store.set('dplan-cd-name', name);
+  const list = loadScores();
+  const entry = { name, score: Math.round(score), dist: Math.round(dist), date: new Date().toISOString() };
+  list.push(entry);
+  list.sort((a, b) => b.score - a.score);
+  const top = list.slice(0, 10);
+  store.set(SCORE_KEY, top);
+  renderScores($('overScores'), top.indexOf(entry));
+  $('saveForm').classList.add('hidden');
+  $('btnAgain').focus({ preventScroll: true });
+});
+
+function pause() {
+  if (state !== 'playing') return;
+  state = 'paused';
+  show('pause');
+}
+function resume() {
+  if (state !== 'paused') return;
+  state = 'playing';
+  show(null);
+}
+function toMenu() {
+  resetGame();
+  state = 'menu';
+  $('hud').classList.add('hidden');
+  show('menu');
+}
+
+// ---------- Eingaben ----------
+function move(dir) {
+  const choosing = state === 'gate' && gatePhase === 'choose';
+  if (state !== 'playing' && !choosing) return;
+  const lane = clamp(player.lane + dir, 0, 2);
+  if (lane !== player.lane) {
+    player.lane = lane;
+    sfx.lane();
+    if (choosing) highlightLane();
+  }
+}
+function jump() {
+  if (state !== 'playing' || player.y > 0.05) return;
+  player.vy = 11;
+  player.y = 0.001;
+  player.spin = 0;
+  sfx.jump();
+}
+
+window.addEventListener('keydown', (e) => {
+  if (e.target instanceof HTMLInputElement) return;
+  const k = e.key;
+  if (k === 'p' || k === 'P' || k === 'Escape') {
+    if (state === 'playing') pause();
+    else if (state === 'paused') resume();
+    return;
+  }
+  if (state === 'gate') {
+    if (e.repeat) return;
+    if (gatePhase === 'choose') {
+      const direct = { 1: 0, 2: 1, 3: 2 }[k];
+      if (direct !== undefined) {
+        player.lane = direct;
+        chooseAnswer();
+      } else if (k === 'ArrowLeft' || k === 'a' || k === 'A') move(-1);
+      else if (k === 'ArrowRight' || k === 'd' || k === 'D') move(1);
+      else if (k === 'Enter' || k === ' ' || k === 'ArrowUp' || k === 'w' || k === 'W') chooseAnswer();
+      e.preventDefault();
+    } else if (gatePhase === 'reveal' && (k === ' ' || k === 'ArrowUp' || k === 'Enter')) {
+      e.preventDefault();
+      leaveGate();
+    }
+    return;
+  }
+  if (state !== 'playing') return;
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', ' '].includes(k)) e.preventDefault();
+  if (e.repeat) return;
+  if (k === 'ArrowLeft' || k === 'a' || k === 'A') move(-1);
+  if (k === 'ArrowRight' || k === 'd' || k === 'D') move(1);
+  if (k === 'ArrowUp' || k === 'w' || k === 'W' || k === ' ') jump();
+});
+
+let touchStart = null;
+canvas.addEventListener('pointerdown', (e) => {
+  touchStart = { x: e.clientX, y: e.clientY };
+});
+canvas.addEventListener('pointerup', (e) => {
+  if (!touchStart || state !== 'playing') return;
+  const dx = e.clientX - touchStart.x;
+  const dy = e.clientY - touchStart.y;
+  touchStart = null;
+  if (Math.abs(dx) > 30 && Math.abs(dx) > Math.abs(dy)) move(dx > 0 ? 1 : -1);
+  else if (dy < -30) jump();
+  else if (Math.abs(dx) < 12 && Math.abs(dy) < 12) {
+    const w = canvas.clientWidth;
+    if (e.clientX < w / 3) move(-1);
+    else if (e.clientX > (w * 2) / 3) move(1);
+    else jump();
+  }
+});
+
+document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
+
+$('btnStart').addEventListener('click', newGame);
+$('btnAgain').addEventListener('click', newGame);
+$('btnScores').addEventListener('click', () => { renderScores($('scoreList')); show('scores'); });
+$('btnBack').addEventListener('click', () => show('menu'));
+$('btnPause').addEventListener('click', () => (state === 'paused' ? resume() : pause()));
+$('btnResume').addEventListener('click', resume);
+$('btnGateGo').addEventListener('click', leaveGate);
+$('btnQuit').addEventListener('click', toMenu);
+$('btnMenu').addEventListener('click', toMenu);
+const muteBtn = $('btnMute');
+muteBtn.classList.toggle('off', muted);
+muteBtn.addEventListener('click', () => {
+  muted = !muted;
+  store.set('dplan-cd-muted', muted);
+  muteBtn.classList.toggle('off', muted);
+});
+
+// Testhilfe: mit ?debug in der URL unverwundbar spielen und direkt zum nächsten Gate springen
+if (new URLSearchParams(location.search).has('debug')) {
+  window.runnerDebug = {
+    invincible: () => { powers.firewall = 9999; },
+    nextGate: () => { nextGateAt = dist; },
+    info: () => ({ state, dist: Math.round(dist), lives, lane: player.lane, gate: !!gate, gatesAsked, gatesCorrect }),
+  };
+}
+
+// ---------- Loop ----------
+function resize() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.fov = camera.aspect < 0.8 ? 72 : 62;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+resize();
+
+const clock = new THREE.Clock();
+function frame() {
+  const dt = Math.min(0.05, clock.getDelta());
+  if (state !== 'paused') {
+    update(dt);
+    updateCamera(dt);
+  }
+  updateHud();
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);

@@ -1,5 +1,5 @@
 # Startet einen einfachen lokalen Webserver fuer das Spiel: http://localhost:8080
-param([int]$Port = 8080)
+param([int]$Port = $(if ($env:PORT) { [int]$env:PORT } else { 8080 }))
 
 $root = $PSScriptRoot
 $types = @{
@@ -9,7 +9,7 @@ $types = @{
 $listener = [System.Net.HttpListener]::new()
 $listener.Prefixes.Add("http://localhost:$Port/")
 $listener.Start()
-Write-Host "dplan Cyber Defense: http://localhost:$Port (Beenden mit Ctrl+C)"
+Write-Host "dplan Data Runner: http://localhost:$Port (Beenden mit Ctrl+C)"
 
 try {
   while ($listener.IsListening) {
@@ -19,6 +19,7 @@ try {
       $path = [Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath.TrimStart('/'))
       if (-not $path) { $path = 'index.html' }
       $file = [IO.Path]::GetFullPath((Join-Path $root $path))
+      if (Test-Path $file -PathType Container) { $file = Join-Path $file 'index.html' }
       if ($file.StartsWith($root) -and (Test-Path $file -PathType Leaf)) {
         $bytes = [IO.File]::ReadAllBytes($file)
         $ext = [IO.Path]::GetExtension($file).ToLower()
