@@ -1,6 +1,10 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 window.__runnerReady = true;
 
@@ -25,19 +29,40 @@ const GATE_EVERY = 550; // MB zwischen zwei Security-Gates
 const FIRST_GATE = 260;
 const GATE_STOP_Z = -9; // hier hält das Tor vor dem Spieler an
 const MAX_LIVES = 3;
-// Tempo: gemütlicher Start, langsam schneller werdend
-const SPEED_START = 13;
-const SPEED_MAX = 30;
-const SPEED_RAMP = 0.15;
 const QUESTIONS = window.DPLAN_QUESTIONS || [];
 
-// Ab wie vielen MB eine Bedrohung auftaucht
-const UNLOCK_AT = { virus: 0, bug: 150, phishing: 400, spam: 650, ransom: 900 };
-const POWER = {
-  backup:   { label: 'BACKUP',   color: '#22a06b', msg: '+1 Netzwerk' },
-  cloud:    { label: 'CLOUD',    color: '#009fe3', msg: 'Cloud-Sync: Daten-Magnet!' },
-  firewall: { label: 'FIREWALL', color: '#e5603b', msg: 'Firewall: unverwundbar!' },
+// ---------- Stufen ----------
+// Jedes Security-Gate ist ein Checkpoint: danach beginnt die nächste Stufe –
+// schneller, dichter, neue Muster und Bedrohungen, und das Rechenzentrum wird dunkler.
+const SPEED_START = 14;
+const levelSpeed = (lv, t) => Math.min(46, SPEED_START + (lv - 1) * 3.4 + Math.min(t, 45) * 0.12);
+const UNLOCK_LEVEL = { virus: 1, bug: 1, phishing: 2, spam: 2, ransom: 3 };
+const LEVEL_NEWS = {
+  2: 'Neu: Phishing-Mails und Spam-Wellen',
+  3: 'Neu: Ransomware und Sprung-Reihen',
+  4: 'Neu: Slalom-Strecken',
+  5: 'Neu: Viren wechseln die Spur',
 };
+
+// Power-ups: dur = Wirkungsdauer in Sekunden, level = ab welcher Stufe sie auftauchen
+const POWER = {
+  backup:    { label: 'BACKUP',    color: '#22a06b', msg: '+1 Netzwerk', level: 1 },
+  cloud:     { label: 'CLOUD',     color: '#009fe3', msg: 'Cloud-Sync: Daten-Magnet!', dur: 10, level: 1 },
+  antivirus: { label: 'ANTIVIRUS', color: '#13a89e', msg: 'Antivirus: Laser aktiv!', dur: 8, level: 1 },
+  firewall:  { label: 'FIREWALL',  color: '#e5603b', msg: 'Firewall: unverwundbar!', dur: 6, level: 2 },
+  twofa:     { label: '2FA',       color: '#0079b0', msg: '2FA: doppelte Punkte!', dur: 12, level: 2 },
+  scan:      { label: 'SCAN',      color: '#7c5cd6', msg: 'Scan: Strecke gesäubert!', level: 3 },
+  update:    { label: 'UPDATE',    color: '#d99a00', msg: 'Update: Zeitlupe!', dur: 6, level: 3 },
+};
+const TIMED = Object.keys(POWER).filter((k) => POWER[k].dur);
+
+// Lichtstimmung je Stufe: Tag → Abend → Dämmerung → Neon-Nacht
+const THEMES = [
+  { bg: 0xeaf2f8, floor: 0xffffff, ground: 0xdde7ee, lane: 0xa8dcf3, hemi: 1.7, sun: 2.2, rack: 0.25, edge: 0.35, glow: 0, bloom: 0 },
+  { bg: 0xc6d9ea, floor: 0xe4edf5, ground: 0xb9cad8, lane: 0x8fd3f2, hemi: 1.45, sun: 1.9, rack: 0.5, edge: 0.7, glow: 0.12, bloom: 0.15 },
+  { bg: 0x587291, floor: 0x9cb0c4, ground: 0x485f78, lane: 0x6fd0ff, hemi: 1.05, sun: 1.3, rack: 0.9, edge: 1.1, glow: 0.3, bloom: 0.55 },
+  { bg: 0x0e1b2c, floor: 0x32465e, ground: 0x0b1623, lane: 0x5fe0ff, hemi: 0.6, sun: 0.7, rack: 1.4, edge: 1.7, glow: 0.5, bloom: 0.9 },
+];
 
 // ---------- Helfer ----------
 const $ = (id) => document.getElementById(id);
@@ -292,7 +317,19 @@ scene.fog = new THREE.Fog(C.bg, 45, 150);
 const camera = new THREE.PerspectiveCamera(62, 1, 0.1, 300);
 camera.position.set(0, 4.3, 7.8);
 
-scene.add(new THREE.HemisphereLight(0xffffff, 0xaebdc9, 1.7));
+const hemi = new THREE.HemisphereLight(0xffffff, 0xaebdc9, 1.7);
+scene.add(hemi);
+
+// Glow-Effekt (Bloom) – auf Touch-Geräten aus Performance-Gründen aus
+const useBloom = !window.matchMedia('(pointer: coarse)').matches;
+let composer = null, bloom = null;
+if (useBloom) {
+  composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0, 0.45, 0.82);
+  composer.addPass(bloom);
+  composer.addPass(new OutputPass());
+}
 const sun = new THREE.DirectionalLight(0xffffff, 2.2);
 sun.position.set(5, 14, 6);
 sun.target.position.set(0, 0, -8);
@@ -385,12 +422,26 @@ for (const side of [-1, 1]) {
 // Kabelbrücken über der Strecke
 const beamMat = new THREE.MeshStandardMaterial({ color: 0x9c9da0, roughness: 0.5 });
 const beams = [];
+// dplan-Schild auf jeder zweiten Kabelbrücke
+const logoMap = new THREE.TextureLoader().load('assets/dplan-logo.png');
+logoMap.colorSpace = THREE.SRGBColorSpace;
+const signPanelMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4, emissive: 0xffffff, emissiveIntensity: 0.15 });
+const signLogoMat = new THREE.MeshBasicMaterial({ map: logoMap, transparent: true });
 for (let i = 0; i < 6; i++) {
   const b = new THREE.Group();
   const bar = new THREE.Mesh(new THREE.BoxGeometry(12.6, 0.18, 0.5), beamMat);
   const glow = new THREE.Mesh(new THREE.BoxGeometry(12.6, 0.05, 0.12), edgeMat);
   glow.position.y = -0.11;
   b.add(bar, glow);
+  if (i % 2 === 0) {
+    const panel = new THREE.Mesh(new RoundedBoxGeometry(3.9, 1.35, 0.12, 2, 0.06), signPanelMat);
+    panel.position.set(0, 0.85, 0);
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(3.9, 0.06, 0.14), edgeMat);
+    frame.position.set(0, 0.16, 0);
+    const logo = new THREE.Mesh(new THREE.PlaneGeometry(3.5, 1.09), signLogoMat);
+    logo.position.set(0, 0.85, 0.07);
+    b.add(panel, frame, logo);
+  }
   b.position.set(0, 3.9, 10 - i * 28);
   scene.add(b);
   beams.push(b);
@@ -404,6 +455,37 @@ for (let i = 0; i < 26; i++) {
   s.position.set(pick([-3.95, 3.95, -4.65, 4.65]), rand(0.15, 0.35), rand(SPAWN_Z, 10));
   scene.add(s);
   streams.push(s);
+}
+// Datenregen hinter den Racks
+const rainMat = new THREE.MeshBasicMaterial({ color: 0x5fd3ff, transparent: true, opacity: 0.55 });
+const rainGeo = new THREE.BoxGeometry(0.05, 1.4, 0.05);
+const rain = [];
+for (let i = 0; i < 50; i++) {
+  const r = new THREE.Mesh(rainGeo, rainMat);
+  r.position.set(pick([-1, 1]) * rand(7.5, 16), rand(0, 16), rand(SPAWN_Z, 10));
+  r.userData.vy = rand(4, 9);
+  scene.add(r);
+  rain.push(r);
+}
+
+// Druckwellen am Boden (bei zerstörten Hindernissen und beim Scan)
+const waveGeo = new THREE.RingGeometry(0.75, 1, 40);
+const waves = [];
+for (let i = 0; i < 10; i++) {
+  const m = new THREE.Mesh(waveGeo, new THREE.MeshBasicMaterial({ color: C.blue, transparent: true, side: THREE.DoubleSide, depthWrite: false }));
+  m.rotation.x = -Math.PI / 2;
+  m.visible = false;
+  scene.add(m);
+  waves.push({ mesh: m, life: 0, max: 1, size: 1 });
+}
+let waveIdx = 0;
+function shockwave(x, z, color, size = 3, dur = 0.5) {
+  const w = waves[waveIdx++ % waves.length];
+  w.mesh.material.color.setHex(color);
+  w.mesh.position.set(x, 0.05, z);
+  w.mesh.visible = true;
+  w.life = w.max = dur;
+  w.size = size;
 }
 
 // ---------- Spielfigur: dp-Datenchip ----------
@@ -892,6 +974,61 @@ function burst(pos, color, n = 16, power = 6) {
   }
 }
 
+// ---------- Lichtstimmung (wechselt sanft mit der Stufe) ----------
+const COLOR_KEYS = ['bg', 'floor', 'ground', 'lane'];
+const NUM_KEYS = ['hemi', 'sun', 'rack', 'edge', 'glow', 'bloom'];
+const themeNow = { ...THEMES[0] };
+for (const key of COLOR_KEYS) themeNow[key] = new THREE.Color(THEMES[0][key]);
+let themeTarget = 0;
+// Hindernisse leuchten nachts in ihrer eigenen Farbe
+const glowMats = [M.virus, M.bug, M.ransom, M.orange, M.spam];
+for (const m of glowMats) m.emissive = m.color.clone();
+const tmpC = new THREE.Color();
+function updateTheme(dt) {
+  const target = THEMES[themeTarget];
+  const k = Math.min(1, dt * 0.8);
+  for (const key of COLOR_KEYS) themeNow[key].lerp(tmpC.setHex(target[key]), k);
+  for (const key of NUM_KEYS) themeNow[key] += (target[key] - themeNow[key]) * k;
+  scene.background.copy(themeNow.bg);
+  scene.fog.color.copy(themeNow.bg);
+  floor.material.color.copy(themeNow.floor);
+  ground.material.color.copy(themeNow.ground);
+  laneLineMat.color.copy(themeNow.lane);
+  hemi.intensity = themeNow.hemi;
+  sun.intensity = themeNow.sun;
+  rackFront.emissiveIntensity = themeNow.rack;
+  edgeMat.emissiveIntensity = themeNow.edge;
+  for (const m of glowMats) m.emissiveIntensity = themeNow.glow;
+  signPanelMat.emissiveIntensity = 0.15 + themeNow.glow * 0.25;
+  rainMat.opacity = 0.35 + themeNow.glow;
+  if (bloom) {
+    bloom.strength = themeNow.bloom;
+    bloom.enabled = themeNow.bloom > 0.02; // tagsüber kein Glow, spart auch Leistung
+  }
+}
+
+// ---------- Laser (Power-up ANTIVIRUS) ----------
+const boltGeo = new THREE.BoxGeometry(0.12, 0.12, 1.1);
+const boltMat = new THREE.MeshBasicMaterial({ color: 0x5fffe0 });
+let bolts = [];
+let boltT = 0;
+function fireBolt() {
+  const m = new THREE.Mesh(boltGeo, boltMat);
+  m.position.set(player.x, player.y + HOVER + 0.6, -0.9);
+  scene.add(m);
+  bolts.push({ mesh: m });
+  tone(1400, 0.08, 'sawtooth', 0.025, -900);
+}
+
+// Scan-Welle: läuft von der Spielfigur nach vorne und zerstört alles, was sie erreicht
+let scanWave = null;
+const scanMesh = new THREE.Mesh(
+  new THREE.TorusGeometry(1, 0.08, 8, 48),
+  new THREE.MeshBasicMaterial({ color: 0xb9a6ff, transparent: true, depthWrite: false }),
+);
+scanMesh.visible = false;
+scene.add(scanMesh);
+
 // ---------- Spielzustand ----------
 // gate: Spiel steht vor einem Security-Gate still (gatePhase: choose | reveal)
 let state = 'menu'; // menu | playing | gate | paused | dying | over
@@ -899,7 +1036,11 @@ let speed = 10, dist = 0, score = 0, lives = MAX_LIVES, elapsed = 0;
 let rowCursor = 0, nextGateAt = FIRST_GATE, gate = null;
 let gatePending = false, gatePhase = null;
 let gatesAsked = 0, gatesCorrect = 0, shake = 0, dyingT = 0;
-let powers = { cloud: 0, firewall: 0 };
+let level = 1, levelT = 0;
+const freshPowers = () => Object.fromEntries(TIMED.map((k) => [k, 0]));
+let powers = freshPowers();
+// Punkte-Multiplikator: höhere Stufen zählen mehr, 2FA verdoppelt
+const scoreMult = () => (1 + (level - 1) * 0.25) * (powers.twofa > 0 ? 2 : 1);
 let objects = [];
 let deck = [];
 
@@ -908,6 +1049,10 @@ function clearObjects() {
   objects = [];
   if (gate) scene.remove(gate.mesh);
   gate = null;
+  for (const b of bolts) scene.remove(b.mesh);
+  bolts = [];
+  scanWave = null;
+  scanMesh.visible = false;
 }
 
 function resetGame() {
@@ -916,7 +1061,8 @@ function resetGame() {
   rowCursor = 45; nextGateAt = FIRST_GATE;
   gatePending = false; gatePhase = null;
   gatesAsked = 0; gatesCorrect = 0; shake = 0;
-  powers = { cloud: 0, firewall: 0 };
+  level = 1; levelT = 0; themeTarget = 0;
+  powers = freshPowers();
   Object.assign(player, { lane: 1, x: 0, y: 0, vy: 0, spin: 0, invuln: 0, tumble: 0 });
   playerGroup.rotation.set(0, 0, 0);
   playerMesh.rotation.set(0, 0, 0);
@@ -941,10 +1087,27 @@ function addObstacle(type, lane, z = SPAWN_Z) {
   o.phase = Math.random() * Math.PI * 2;
   o.x = type === 'spam' ? (LANES[lane] + LANES[lane + 1]) / 2 : LANES[lane];
   o.baseX = o.x;
+  o.lane = lane;
+  o.hp = type === 'ransom' ? 3 : 1;
+  // ab Stufe 5 wechseln manche Viren unterwegs die Spur
+  o.wander = type === 'virus' && level >= 5 && Math.random() < 0.35;
   o.mesh.position.set(o.x, 0, z);
   scene.add(o.mesh);
   objects.push(o);
+  return o;
 }
+
+function destroyObstacle(o, color) {
+  if (o.dead) return;
+  o.dead = true;
+  const pts = Math.round(50 * scoreMult());
+  score += pts;
+  const z = o.mesh.position.z;
+  burst(tmpV.set(o.x, 0.8, z), color ?? ENEMY_COLOR[o.type], 20, 7);
+  shockwave(o.x, z, color ?? ENEMY_COLOR[o.type], 3.2, 0.45);
+  sfx.smash();
+}
+const ENEMY_COLOR = { virus: C.red, bug: C.green, ransom: C.purple, phishing: C.orange, spam: C.grey };
 
 function addBits(lane, z = SPAWN_Z, count = 5, arc = false) {
   for (let i = 0; i < count; i++) {
@@ -957,38 +1120,74 @@ function addBits(lane, z = SPAWN_Z, count = 5, arc = false) {
   }
 }
 
+// Power-up-Kapsel: leuchtender Kern mit Ring, darüber das Label
+const powerMatCache = {};
+const powerCoreGeo = new THREE.IcosahedronGeometry(0.34, 0);
+const powerRingGeo = new THREE.TorusGeometry(0.58, 0.04, 8, 32);
 function addPower(lane, z = SPAWN_Z) {
-  const keys = Object.keys(POWER);
-  const type = lives < MAX_LIVES && Math.random() < 0.45 ? 'backup' : pick(keys);
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: labelTex(type) }));
-  sprite.scale.set(2.0, 0.62, 1);
-  sprite.position.set(LANES[lane], 1.1, z);
-  scene.add(sprite);
-  objects.push({ kind: 'pow', type, mesh: sprite, x: LANES[lane], t: 0 });
+  const keys = Object.keys(POWER).filter((k) => POWER[k].level <= level);
+  const type = lives < MAX_LIVES && Math.random() < 0.3 ? 'backup' : pick(keys);
+  const col = parseInt(POWER[type].color.slice(1), 16);
+  powerMatCache[type] ??= new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.9, roughness: 0.2, metalness: 0.3 });
+  const g = new THREE.Group();
+  const core = new THREE.Mesh(powerCoreGeo, powerMatCache[type]);
+  const ring = new THREE.Mesh(powerRingGeo, powerMatCache[type]);
+  const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: labelTex(type), depthWrite: false }));
+  label.scale.set(1.7, 0.53, 1);
+  label.position.y = 0.85;
+  g.add(core, ring, label);
+  g.position.set(LANES[lane], 1.0, z);
+  scene.add(g);
+  objects.push({ kind: 'pow', type, mesh: g, core, ring, x: LANES[lane], t: 0 });
 }
 
+// Gibt zurück, wie viel zusätzlicher Abstand bis zur nächsten Reihe nötig ist
 function spawnRow() {
-  const avail = Object.keys(UNLOCK_AT).filter((t) => dist >= UNLOCK_AT[t]);
+  const types = Object.keys(UNLOCK_LEVEL).filter((t) => level >= UNLOCK_LEVEL[t] && !(t === 'bug' && dist < 120));
+  const single = types.filter((t) => t !== 'spam');
+  const jumpables = single.filter((t) => t === 'virus' || t === 'bug');
   const lanes = shuffle([0, 1, 2]);
   let free = lanes[2];
-  if (avail.includes('spam') && Math.random() < 0.18) {
+  let extra = 0;
+  const r = Math.random();
+
+  if (level >= 3 && r < 0.12) {
+    // Sprung-Reihe: alle drei Spuren belegt, nur Springen hilft
+    for (const l of [0, 1, 2]) addObstacle(pick(jumpables), l);
+    addBits(lanes[0], SPAWN_Z + 4, 4, true);
+    free = -1;
+  } else if (level >= 4 && r < 0.26) {
+    // Slalom: mehrere Reihen kurz hintereinander, jeweils eine Spur frei
+    const gap = Math.max(11, speed * 0.42);
+    let lane = Math.floor(Math.random() * 3);
+    const rows = level >= 6 ? 4 : 3;
+    for (let k = 0; k < rows; k++) {
+      for (const l of [0, 1, 2]) if (l !== lane) addObstacle(pick(single.filter((t) => t !== 'phishing')), l, SPAWN_Z - k * gap);
+      addBits(lane, SPAWN_Z - k * gap, 1);
+      lane = clamp(lane + pick([-1, 1]), 0, 2);
+    }
+    extra = gap * (rows - 1);
+    free = -1;
+  } else if (types.includes('spam') && r < 0.4) {
     const left = Math.random() < 0.5 ? 0 : 1;
     addObstacle('spam', left);
     free = left === 0 ? 2 : 0;
     addBits(left, SPAWN_Z + 4, 4, true);
+    // ab Stufe 3 steht oft noch etwas in der freien Spur dahinter
+    if (level >= 3 && Math.random() < 0.5) addObstacle(pick(jumpables), free, SPAWN_Z - 10);
   } else {
-    const single = avail.filter((t) => t !== 'spam');
     const type = pick(single);
     addObstacle(type, lanes[0]);
-    if (type !== 'phishing' && dist > 600 && Math.random() < 0.35) {
-      const second = pick(single.filter((t) => t !== 'phishing'));
-      addObstacle(second, lanes[1]);
+    const doubleChance = level >= 2 ? Math.min(0.7, 0.25 + (level - 2) * 0.12) : 0.1;
+    if (type !== 'phishing' && Math.random() < doubleChance) {
+      addObstacle(pick(single.filter((t) => t !== 'phishing')), lanes[1]);
     } else {
       free = Math.random() < 0.5 ? lanes[1] : lanes[2];
     }
   }
-  if (Math.random() < 0.65) addBits(free, SPAWN_Z - 3);
-  if (Math.random() < 0.07) addPower(free, SPAWN_Z - 14);
+  if (free >= 0 && Math.random() < 0.65) addBits(free, SPAWN_Z - 3);
+  if (Math.random() < 0.09) addPower(free >= 0 ? free : lanes[0], SPAWN_Z - 14 - extra);
+  return extra;
 }
 
 // ---------- Security-Gate Ablauf ----------
@@ -1099,6 +1298,22 @@ function leaveGate() {
   state = 'playing';
   player.invuln = 1;
   music.setMode('run');
+  levelUp();
+}
+
+function levelUp() {
+  level++;
+  levelT = 0;
+  themeTarget = Math.min(level - 1, THEMES.length - 1);
+  const el = $('levelBanner');
+  $('levelNum').textContent = `Stufe ${level}`;
+  $('levelNews').textContent = LEVEL_NEWS[level] || 'Mehr Tempo, mehr Bedrohungen!';
+  el.classList.remove('hidden', 'go');
+  void el.offsetWidth;
+  el.classList.add('go');
+  tone(392, 0.12, 'triangle', 0.07);
+  tone(523, 0.12, 'triangle', 0.07, 0, 0.12);
+  tone(784, 0.25, 'triangle', 0.08, 0, 0.24);
 }
 
 // ---------- Treffer & Power-ups ----------
@@ -1132,10 +1347,16 @@ function applyPower(o) {
     if (lives < MAX_LIVES) lives++;
     else score += 200;
   }
-  if (o.type === 'cloud') powers.cloud = 10;
-  if (o.type === 'firewall') powers.firewall = 6;
+  if (def.dur) powers[o.type] = def.dur;
+  if (o.type === 'scan') {
+    scanWave = { z: 0, life: 0.7 };
+    scanMesh.visible = true;
+    tone(220, 0.6, 'sawtooth', 0.06, 900);
+  }
   toast(def.msg, def.color);
-  burst(o.mesh.position, parseInt(def.color.slice(1), 16), 18, 5);
+  const col = parseInt(def.color.slice(1), 16);
+  burst(o.mesh.position, col, 18, 5);
+  shockwave(player.x, 0, col, 4, 0.5);
   sfx.power();
 }
 
@@ -1148,8 +1369,9 @@ function update(dt) {
   const atGate = state === 'gate';
   if (playing) {
     elapsed += dt;
-    const target = Math.min(SPEED_MAX, SPEED_START + elapsed * SPEED_RAMP);
-    speed += (target - speed) * Math.min(1, dt * 2);
+    levelT += dt;
+    const target = levelSpeed(level, levelT);
+    speed += (target - speed) * Math.min(1, dt * 1.5);
   } else if (atGate) {
     // sanft abbremsen, sodass das Tor bei GATE_STOP_Z stehen bleibt
     const left = gate ? Math.max(0, GATE_STOP_Z - gate.mesh.position.z) : 0;
@@ -1175,6 +1397,22 @@ function update(dt) {
     s.position.z += dz * 1.8 + dt * 6;
     if (s.position.z > 12) s.position.z = SPAWN_Z + rand(0, 20);
   }
+  for (const r of rain) {
+    r.position.z += dz;
+    r.position.y -= r.userData.vy * dt;
+    if (r.position.y < -1) r.position.y = rand(12, 18);
+    if (r.position.z > 12) r.position.z = SPAWN_Z + rand(0, 20);
+  }
+  for (const w of waves) {
+    if (w.life <= 0) continue;
+    w.life -= dt;
+    w.mesh.position.z += dz;
+    const p = 1 - w.life / w.max;
+    w.mesh.scale.setScalar(0.3 + p * w.size);
+    w.mesh.material.opacity = (1 - p) * 0.8;
+    if (w.life <= 0) w.mesh.visible = false;
+  }
+  updateTheme(dt);
 
   for (const p of particles) {
     if (p.life <= 0) continue;
@@ -1193,14 +1431,25 @@ function update(dt) {
 
   if (playing) {
     dist += dz;
-    score += dz;
+    score += dz * scoreMult();
     for (const k in powers) powers[k] = Math.max(0, powers[k] - dt);
     player.invuln = Math.max(0, player.invuln - dt);
 
     rowCursor -= dz;
     if (rowCursor <= 0) {
-      spawnRow();
-      rowCursor = rand(0.9, 1.3) * Math.max(15, speed * 0.95);
+      const extra = spawnRow();
+      // Abstand zwischen Reihen schrumpft mit jeder Stufe
+      const tight = Math.max(0.58, 1 - (level - 1) * 0.08);
+      rowCursor = extra + rand(0.85, 1.25) * Math.max(10, speed * 0.95 * tight);
+    }
+
+    // Antivirus-Laser
+    if (powers.antivirus > 0) {
+      boltT -= dt;
+      if (boltT <= 0) {
+        fireBolt();
+        boltT = 0.2;
+      }
     }
     // Vor dem Gate: keine neuen Hindernisse, weit entfernte verschwinden im Nebel
     if (!gate && !gatePending && dist >= nextGateAt) {
@@ -1226,21 +1475,69 @@ function update(dt) {
     }
   }
 
+  // Laser-Schüsse fliegen nach vorne und treffen das erste Hindernis in ihrer Bahn
+  for (const b of bolts) {
+    b.mesh.position.z -= 75 * dt;
+    if (b.mesh.position.z < -110) b.dead = true;
+    for (const o of objects) {
+      if (b.dead) break;
+      if (o.kind !== 'obs' || o.dead) continue;
+      if (Math.abs(o.x - b.mesh.position.x) < o.w / 2 + 0.15 && Math.abs(o.mesh.position.z - b.mesh.position.z) < o.d / 2 + 0.8) {
+        b.dead = true;
+        o.hp--;
+        if (o.hp <= 0) destroyObstacle(o, 0x5fffe0);
+        else burst(tmpV.set(o.x, 1, o.mesh.position.z), 0x5fffe0, 6, 3);
+      }
+    }
+  }
+  if (bolts.some((b) => b.dead)) {
+    bolts = bolts.filter((b) => {
+      if (b.dead) scene.remove(b.mesh);
+      return !b.dead;
+    });
+  }
+
+  // Scan-Welle
+  if (scanWave) {
+    scanWave.life -= dt;
+    scanWave.z -= 130 * dt;
+    const p = 1 - scanWave.life / 0.7;
+    scanMesh.position.set(0, 1.2, scanWave.z);
+    scanMesh.scale.setScalar(1.5 + p * 4);
+    scanMesh.material.opacity = 1 - p;
+    for (const o of objects) {
+      if (o.kind === 'obs' && !o.dead && o.mesh.position.z > scanWave.z) destroyObstacle(o, 0x7c5cd6);
+    }
+    if (scanWave.life <= 0) {
+      scanWave = null;
+      scanMesh.visible = false;
+    }
+  }
+
   // Objekte bewegen und Kollisionen prüfen
   const px = player.x;
   const py = player.y;
   for (const o of objects) {
+    if (o.dead) continue;
     o.mesh.position.z += dz;
     const z = o.mesh.position.z;
     if (o.kind === 'obs') {
       o.t += dt;
       if (o.type === 'virus') o.spin.rotation.set(o.t * 1.4, o.t * 2, 0);
+      if (o.wander && z > -70) {
+        // wechselt alle paar Sekunden in eine Nachbarspur
+        if (o.t > (o.nextMove ?? 0)) {
+          o.lane = clamp(o.lane + pick([-1, 1]), 0, 2);
+          o.nextMove = o.t + rand(1.2, 2);
+        }
+        o.x += (LANES[o.lane] - o.x) * Math.min(1, dt * 2.5);
+      }
       if (o.type === 'bug') {
         o.x = o.baseX + Math.sin(o.t * 3 + o.phase) * 0.35;
         o.spin.rotation.y = Math.cos(o.t * 3 + o.phase) * 0.35;
       }
       if (o.type === 'phishing') {
-        if (z > -60) o.x = clamp(o.baseX + Math.sin(o.t * 1.4 + o.phase) * 2.6, -2.4, 2.4);
+        if (z > -60) o.x = clamp(o.baseX + Math.sin(o.t * (1.2 + level * 0.15) + o.phase) * 2.6, -2.4, 2.4);
         o.spin.position.y = 1.3 + Math.sin(o.t * 3) * 0.12;
         o.spin.rotation.z = Math.sin(o.t * 2.5) * 0.15;
       }
@@ -1250,10 +1547,7 @@ function update(dt) {
       if (playing && Math.abs(z) < o.d / 2 + 0.45 && Math.abs(o.x - px) < o.w / 2 + 0.38 &&
           py < o.yMax && py + PLAYER_SIZE > o.yMin) {
         if (powers.firewall > 0) {
-          o.dead = true;
-          score += 50;
-          burst(tmpV.set(o.x, 0.8, 0), C.fire, 18, 7);
-          sfx.smash();
+          destroyObstacle(o, C.fire);
         } else if (player.invuln <= 0) {
           o.dead = true;
           burst(tmpV.set(o.x, 0.8, 0), C.red, 16, 6);
@@ -1271,13 +1565,15 @@ function update(dt) {
       const dy = o.mesh.position.y - (py + 0.6);
       if (playing && Math.abs(z) < 0.9 && Math.abs(o.x - px) < 0.9 && Math.abs(dy) < 1.1) {
         o.dead = true;
-        score += 25;
+        score += 25 * scoreMult();
         burst(o.mesh.position, C.blue, 5, 3);
         sfx.bit();
       }
     } else if (o.kind === 'pow') {
       o.t += dt;
-      o.mesh.position.y = 1.1 + Math.sin(o.t * 4) * 0.15;
+      o.mesh.position.y = 1.0 + Math.sin(o.t * 4) * 0.15;
+      o.core.rotation.set(o.t * 1.5, o.t * 2, 0);
+      o.ring.rotation.set(Math.PI / 2 + Math.sin(o.t * 2) * 0.4, o.t * 3, 0);
       if (playing && Math.abs(z) < 1 && Math.abs(o.x - px) < 1.1 && py < 1.6) {
         o.dead = true;
         applyPower(o);
@@ -1370,6 +1666,12 @@ function updateCamera(dt) {
     camera.position.y += rand(-1, 1) * shake * 0.6;
   }
   camera.lookAt(player.x * 0.35, 1.1 + player.y * 0.2, -8);
+  // Weitwinkel bei hohem Tempo verstärkt das Geschwindigkeitsgefühl
+  const fov = baseFov + clamp((speed - SPEED_START) * 0.3, 0, 12) - (powers.update > 0 && state === 'playing' ? 4 : 0);
+  if (Math.abs(camera.fov - fov) > 0.05) {
+    camera.fov += (fov - camera.fov) * Math.min(1, dt * 3);
+    camera.updateProjectionMatrix();
+  }
 }
 
 // ---------- HUD & Meldungen ----------
@@ -1383,6 +1685,7 @@ function updateHud() {
   if (state === 'menu') return;
   setText('hudScore', fmt(score));
   setText('hudDist', fmt(dist) + ' MB');
+  setText('hudLevel', String(level));
   const livesHtml = Array.from({ length: MAX_LIVES }, (_, i) => `<i class="${i < lives ? '' : 'off'}"></i>`).join('');
   if (hudCache.lives !== livesHtml) {
     hudCache.lives = livesHtml;
@@ -1447,7 +1750,7 @@ function renderScores(ol, highlight = -1) {
     name.textContent = e.name;
     const meta = document.createElement('span');
     meta.className = 'meta';
-    meta.textContent = `${fmt(e.dist)} MB`;
+    meta.textContent = e.level ? `Stufe ${e.level} · ${fmt(e.dist)} MB` : `${fmt(e.dist)} MB`;
     const pts = document.createElement('span');
     pts.className = 'pts';
     pts.textContent = fmt(e.score);
@@ -1460,14 +1763,14 @@ function showGameOver() {
   state = 'over';
   $('gatePanel').classList.add('hidden');
   $('overScore').textContent = fmt(score);
-  $('overDist').textContent = fmt(dist);
+  $('overLevel').textContent = level;
   $('overQuiz').textContent = `${gatesCorrect}/${gatesAsked}`;
   let msg;
-  if (dist >= 3000) msg = 'Wahnsinn! Deine Daten kommen immer sicher ans Ziel.';
-  else if (dist >= 1500) msg = 'Starke Leistung – fast schon Glasfaser-Tempo!';
-  else if (dist >= 700) msg = 'Gut unterwegs! Die nächsten Gates warten.';
+  if (level >= 7) msg = 'Wahnsinn! Selbst in der Neon-Nacht kommen deine Daten sicher an.';
+  else if (level >= 5) msg = 'Starke Leistung – fast schon Glasfaser-Tempo!';
+  else if (level >= 3) msg = 'Gut unterwegs! Die nächsten Stufen warten.';
   else msg = 'Paketverlust passiert – einfach nochmal senden!';
-  $('overMsg').textContent = msg;
+  $('overMsg').textContent = `${fmt(dist)} MB übertragen. ${msg}`;
   const canSave = qualifies(score);
   $('saveForm').classList.toggle('hidden', !canSave);
   $('nameInput').value = store.get('dplan-cd-name', '');
@@ -1482,7 +1785,7 @@ $('saveForm').addEventListener('submit', (ev) => {
   if (!name) return;
   store.set('dplan-cd-name', name);
   const list = loadScores();
-  const entry = { name, score: Math.round(score), dist: Math.round(dist), date: new Date().toISOString() };
+  const entry = { name, score: Math.round(score), dist: Math.round(dist), level, date: new Date().toISOString() };
   list.push(entry);
   list.sort((a, b) => b.score - a.score);
   const top = list.slice(0, 10);
@@ -1613,6 +1916,8 @@ muteBtn.addEventListener('click', () => {
 if (new URLSearchParams(location.search).has('debug')) {
   window.runnerDebug = {
     invincible: () => { powers.firewall = 9999; },
+    power: (type) => applyPower({ type, mesh: playerGroup }),
+    level: (n) => { while (level < n) levelUp(); },
     nextGate: () => { nextGateAt = dist; },
     info: () => ({ state, dist: Math.round(dist), lives, lane: player.lane, gate: !!gate, gatesAsked, gatesCorrect }),
   };
@@ -1623,10 +1928,16 @@ function resize() {
   const w = window.innerWidth;
   const h = window.innerHeight;
   renderer.setSize(w, h, false);
+  if (composer) {
+    composer.setPixelRatio(renderer.getPixelRatio());
+    composer.setSize(w, h);
+  }
   camera.aspect = w / h;
-  camera.fov = camera.aspect < 0.8 ? 72 : 62;
+  baseFov = camera.aspect < 0.8 ? 72 : 62;
+  camera.fov = baseFov;
   camera.updateProjectionMatrix();
 }
+let baseFov = 62;
 window.addEventListener('resize', resize);
 resize();
 
@@ -1634,11 +1945,14 @@ const clock = new THREE.Clock();
 function frame() {
   const dt = Math.min(0.05, clock.getDelta());
   if (state !== 'paused') {
-    update(dt);
+    // UPDATE-Power-up: Zeitlupe für die Welt
+    const slow = state === 'playing' && powers.update > 0 ? 0.55 : 1;
+    update(dt * slow);
     updateCamera(dt);
   }
   updateHud();
-  renderer.render(scene, camera);
+  if (composer) composer.render();
+  else renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

@@ -27,6 +27,10 @@
         <span id="hudScore" class="val">0</span>
       </div>
       <div class="hud-box">
+        <span class="lbl">Stufe</span>
+        <span id="hudLevel" class="val">1</span>
+      </div>
+      <div class="hud-box hud-dist">
         <span class="lbl">Übertragen</span>
         <span id="hudDist" class="val">0 MB</span>
       </div>
@@ -53,6 +57,10 @@
     </section>
 
     <div id="toast" class="toast hidden"></div>
+    <div id="levelBanner" class="level-banner hidden">
+      <span id="levelNum" class="level-num">Stufe 2</span>
+      <span id="levelNews" class="level-news"></span>
+    </div>
     <div id="flash" class="flash"></div>
 
     <!-- Startbildschirm -->
@@ -64,8 +72,8 @@
         <div class="howto">
           <div><b>Spur wechseln</b><span>← → bzw. A D – auf dem Handy links/rechts wischen oder antippen.</span></div>
           <div><b>Springen</b><span>↑, W oder Leertaste – auf dem Handy nach oben wischen. Niedrige Hindernisse lassen sich überspringen.</span></div>
-          <div><b>Power-ups</b><span><em class="pw backup">BACKUP</em> +1 Netzwerk · <em class="pw cloud">CLOUD</em> zieht Daten an · <em class="pw firewall">FIREWALL</em> macht kurz unverwundbar</span></div>
-          <div><b>Security-Gate</b><span>Das Spiel hält an – lies die Frage in Ruhe und wähle das Tor. Richtig: Bonus und +1 Netzwerk. Falsch: −1 Netzwerk.</span></div>
+          <div><b>Power-ups</b><span><em class="pw antivirus">ANTIVIRUS</em> schiesst Laser · <em class="pw scan">SCAN</em> säubert die Strecke · <em class="pw firewall">FIREWALL</em> unverwundbar · <em class="pw update">UPDATE</em> Zeitlupe · <em class="pw twofa">2FA</em> doppelte Punkte · <em class="pw cloud">CLOUD</em> Daten-Magnet · <em class="pw backup">BACKUP</em> +1 Netzwerk</span></div>
+          <div><b>Security-Gate</b><span>Das Spiel hält an – lies die Frage in Ruhe und wähle das Tor. Richtig: Bonus und +1 Netzwerk. Falsch: −1 Netzwerk. Danach beginnt die nächste <strong>Stufe</strong>: schneller, dichter, dunkler.</span></div>
         </div>
         <div class="skins">
           <span class="section-title">Dein Datenchip</span>
@@ -101,7 +109,7 @@
         <div class="brand-bar danger">Verbindung unterbrochen</div>
         <div class="stats">
           <div><span id="overScore" class="big">0</span><span>Punkte</span></div>
-          <div><span id="overDist" class="big">0</span><span>MB übertragen</span></div>
+          <div><span id="overLevel" class="big">1</span><span>Stufe erreicht</span></div>
           <div><span id="overQuiz" class="big">0/0</span><span>Security-Gates</span></div>
         </div>
         <p id="overMsg" class="lead"></p>
