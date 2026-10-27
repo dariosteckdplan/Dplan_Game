@@ -36,9 +36,9 @@
       </div>
       <div id="hudPowers" class="powers"></div>
       <div class="hud-spacer"></div>
-      <button id="btnMute" class="icon-btn" type="button" aria-label="Ton ein/aus" title="Ton ein/aus">♪</button>
       <button id="btnPause" class="icon-btn" type="button" aria-label="Pause" title="Pause (P)">❚❚</button>
     </header>
+    <button id="btnMute" class="icon-btn mute-float" type="button" aria-label="Musik und Ton ein/aus" title="Musik und Ton ein/aus">♪</button>
 
     <!-- Security-Gate: das Spiel hält an, die Frage erscheint unten -->
     <section id="gatePanel" class="gate-panel hidden" aria-live="polite">
@@ -66,6 +66,14 @@
           <div><b>Springen</b><span>↑, W oder Leertaste – auf dem Handy nach oben wischen. Niedrige Hindernisse lassen sich überspringen.</span></div>
           <div><b>Power-ups</b><span><em class="pw backup">BACKUP</em> +1 Netzwerk · <em class="pw cloud">CLOUD</em> zieht Daten an · <em class="pw firewall">FIREWALL</em> macht kurz unverwundbar</span></div>
           <div><b>Security-Gate</b><span>Das Spiel hält an – lies die Frage in Ruhe und wähle das Tor. Richtig: Bonus und +1 Netzwerk. Falsch: −1 Netzwerk.</span></div>
+        </div>
+        <div class="skins">
+          <span class="section-title">Dein Datenchip</span>
+          <div class="skin-row">
+            <button class="skin-btn" data-skin="classic" type="button"><i style="--frame:#a3a4a7;--face:#fff;--trace:#009fe3"></i>Classic</button>
+            <button class="skin-btn" data-skin="night" type="button"><i style="--frame:#2a2c30;--face:#16191d;--trace:#38d6ff"></i>Night</button>
+            <button class="skin-btn" data-skin="ice" type="button"><i style="--frame:#dfeaf1;--face:#fff;--trace:#5fc8f5"></i>Ice</button>
+          </div>
         </div>
         <div class="actions">
           <button id="btnStart" class="btn primary" type="button">Los geht's</button>

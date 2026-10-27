@@ -95,6 +95,66 @@ canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 }
 .icon-btn:hover { background: var(--blue-soft); color: var(--blue); }
 .icon-btn.off { text-decoration: line-through; opacity: 0.6; }
+#hud { padding-right: 66px; }
+.mute-float { position: absolute; top: 12px; right: 16px; z-index: 4; }
+
+/* ---------- Design-Auswahl ---------- */
+.skins { margin-bottom: 16px; }
+.section-title {
+  display: block;
+  font-family: var(--font);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--grey);
+  margin-bottom: 8px;
+}
+.skin-row { display: flex; gap: 10px; justify-content: center; }
+.skin-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 92px;
+  padding: 10px 12px 8px;
+  border: 2px solid var(--grey-light);
+  border-radius: 14px;
+  background: var(--white);
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--grey-dark);
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.1s;
+}
+.skin-btn:hover { border-color: var(--blue); }
+.skin-btn.active { border-color: var(--blue); background: var(--blue-soft); color: var(--blue-dark); transform: translateY(-2px); }
+/* Mini-Würfel: Rahmen, Fläche und leuchtender Ring */
+.skin-btn i {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--frame);
+  padding: 4px;
+  display: block;
+  position: relative;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--trace) 45%, transparent);
+}
+.skin-btn i::before {
+  content: "dp";
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 7px;
+  background: var(--face);
+  outline: 2px solid var(--trace);
+  outline-offset: -5px;
+  color: var(--trace);
+  font-family: var(--font);
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 700;
+}
 
 /* ---------- Security-Gate (unten, Spiel steht still) ---------- */
 .gate-panel {
@@ -323,7 +383,9 @@ canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 .scores .empty::before { display: none; }
 
 @media (max-width: 560px) {
-  #hud { gap: 6px; padding: 8px; }
+  #hud { gap: 6px; padding: 8px 56px 8px 8px; }
+  .mute-float { top: 8px; right: 8px; }
+  .skin-btn { min-width: 0; flex: 1; }
   .hud-box { padding: 4px 8px; }
   .val { font-size: 16px; }
   .powers { display: none; }

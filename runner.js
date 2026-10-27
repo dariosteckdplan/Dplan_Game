@@ -88,24 +88,184 @@ function canvasTex(w, h, draw) {
 
 // ---------- Sound (WebAudio, ohne Dateien) ----------
 let audio = null;
+let master = null; // Kompressor vor dem Ausgang
+let sfxBus = null;
 let muted = store.get('dplan-cd-muted', false);
-function tone(freq, dur, type = 'square', vol = 0.05, slide = 0, delay = 0) {
-  if (muted) return;
+
+// Browser erlauben Ton erst nach einer Interaktion – daher bei Klick/Taste starten
+function ensureAudio() {
   try {
-    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
-    const t = audio.currentTime + delay;
-    const o = audio.createOscillator();
-    const gain = audio.createGain();
-    o.type = type;
-    o.frequency.setValueAtTime(freq, t);
-    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), t + dur);
-    gain.gain.setValueAtTime(vol, t);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(gain).connect(audio.destination);
-    o.start(t);
-    o.stop(t + dur + 0.02);
+    if (!audio) {
+      audio = new (window.AudioContext || window.webkitAudioContext)();
+      master = audio.createDynamicsCompressor();
+      master.threshold.value = -14;
+      master.connect(audio.destination);
+      sfxBus = audio.createGain();
+      sfxBus.connect(master);
+      music.init();
+    }
+    if (audio.state === 'suspended' && state !== 'paused') audio.resume();
   } catch { /* Audio nicht verfügbar */ }
+  return audio;
 }
+
+function tone(freq, dur, type = 'square', vol = 0.05, slide = 0, delay = 0) {
+  if (muted || !ensureAudio()) return;
+  const t = audio.currentTime + delay;
+  const o = audio.createOscillator();
+  const gain = audio.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(freq, t);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), t + dur);
+  gain.gain.setValueAtTime(vol, t);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(gain).connect(sfxBus);
+  o.start(t);
+  o.stop(t + dur + 0.02);
+}
+
+// ---------- Soundtrack: «Datacenter Drive» ----------
+// Live erzeugter Elektro-Loop in a-Moll (Am – F – C – G), 116 BPM.
+// Je nach Spielsituation werden die Spuren (Beat, Bass, Arpeggio, Fläche) ein-/ausgeblendet.
+const music = (() => {
+  const STEP = 60 / 116 / 4; // Sechzehntel
+  const CHORDS = [[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]];
+  const BASS = [45, 41, 36, 43];
+  const ARP = [0, 1, 2, 1, 0, 2, 1, 2, 0, 1, 2, 3, 2, 1, 0, 1]; // 3 = Grundton eine Oktave höher
+  const LEAD = [ // Melodie über 4 Takte (MIDI, 0 = Pause), je Achtel
+    76, 0, 74, 72, 0, 72, 74, 0, 72, 0, 69, 0, 67, 69, 0, 0,
+    72, 0, 74, 76, 0, 79, 76, 0, 74, 0, 71, 0, 74, 0, 0, 0,
+  ];
+  const MIX = {
+    off:  { drums: 0, bass: 0, arp: 0, pad: 0, lead: 0 },
+    menu: { drums: 0, bass: 0.5, arp: 0.6, pad: 1, lead: 0 },
+    run:  { drums: 1, bass: 1, arp: 0.8, pad: 0.45, lead: 0.7 },
+    gate: { drums: 0, bass: 0.3, arp: 0.35, pad: 1, lead: 0 },
+  };
+  const freq = (m) => 440 * 2 ** ((m - 69) / 12);
+  let bus, layers, noise, timer = null;
+  let mode = 'menu', step = 0, nextTime = 0;
+
+  function init() {
+    bus = audio.createGain();
+    bus.gain.value = muted ? 0 : 0.5;
+    bus.connect(master);
+    const mk = (filterType, f) => {
+      const g = audio.createGain();
+      g.gain.value = 0;
+      if (!filterType) { g.connect(bus); return g; }
+      const flt = audio.createBiquadFilter();
+      flt.type = filterType;
+      flt.frequency.value = f;
+      g.connect(flt).connect(bus);
+      return g;
+    };
+    layers = { drums: mk(), bass: mk('lowpass', 600), arp: mk('lowpass', 2200), pad: mk('lowpass', 1100), lead: mk('lowpass', 3000) };
+    // Echo für Arpeggio und Melodie
+    const delay = audio.createDelay(1);
+    delay.delayTime.value = STEP * 3;
+    const fb = audio.createGain();
+    fb.gain.value = 0.32;
+    const wet = audio.createGain();
+    wet.gain.value = 0.28;
+    delay.connect(fb).connect(delay);
+    delay.connect(wet).connect(bus);
+    layers.arp.connect(delay);
+    layers.lead.connect(delay);
+    noise = audio.createBuffer(1, audio.sampleRate, audio.sampleRate);
+    const d = noise.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    setMode(mode);
+  }
+
+  function voice(type, f, t, dur, vol, dest, attack = 0.005, detune = 0) {
+    const o = audio.createOscillator();
+    const g = audio.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(f, t);
+    o.detune.value = detune;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(dest);
+    o.start(t);
+    o.stop(t + dur + 0.05);
+    return o;
+  }
+
+  function hit(t, filterType, f, dur, vol) {
+    const src = audio.createBufferSource();
+    src.buffer = noise;
+    const flt = audio.createBiquadFilter();
+    flt.type = filterType;
+    flt.frequency.value = f;
+    const g = audio.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(flt).connect(g).connect(layers.drums);
+    src.start(t);
+    src.stop(t + dur + 0.02);
+  }
+
+  function playStep(s, t) {
+    const bar = Math.floor(s / 16) % 4;
+    const i = s % 16;
+    const chord = CHORDS[bar];
+    // Beat
+    if (i % 4 === 0) {
+      const k = voice('sine', 150, t, 0.28, 0.9, layers.drums);
+      k.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    }
+    if (i === 4 || i === 12) {
+      hit(t, 'bandpass', 1900, 0.16, 0.45);
+      voice('triangle', 190, t, 0.08, 0.15, layers.drums);
+    }
+    if (i % 2 === 1) hit(t, 'highpass', 7500, 0.04, i % 4 === 3 ? 0.07 : 0.16);
+    // Bass: Achtel mit Oktavsprung
+    if (i % 2 === 0) voice('sawtooth', freq(BASS[bar] + (i % 4 === 2 ? 12 : 0)), t, STEP * 1.7, 0.32, layers.bass);
+    // Arpeggio
+    const n = ARP[i] === 3 ? chord[0] + 12 : chord[ARP[i]];
+    voice('square', freq(n + 12), t, 0.13, 0.06, layers.arp);
+    // Fläche: pro Takt ein weicher Akkord aus verstimmten Sägezähnen
+    if (i === 0) {
+      for (const m of chord) {
+        for (const det of [-9, 9]) voice('sawtooth', freq(m), t, STEP * 16 + 0.5, 0.035, layers.pad, 0.45, det);
+      }
+    }
+    // Melodie (Achtel)
+    if (i % 2 === 0) {
+      const note = LEAD[(Math.floor(s / 2)) % LEAD.length];
+      if (note) voice('triangle', freq(note), t, STEP * 3, 0.12, layers.lead, 0.01);
+    }
+  }
+
+  function schedule() {
+    if (!audio || audio.state !== 'running') return;
+    if (nextTime < audio.currentTime) nextTime = audio.currentTime + 0.05;
+    while (nextTime < audio.currentTime + 0.15) {
+      playStep(step, nextTime);
+      nextTime += STEP;
+      step = (step + 1) % 128;
+    }
+  }
+
+  function setMode(m) {
+    mode = m;
+    if (!layers) return;
+    const now = audio.currentTime;
+    for (const k in layers) layers[k].gain.setTargetAtTime(MIX[m][k], now, 0.5);
+    if (m !== 'off' && !timer) timer = setInterval(schedule, 25);
+  }
+
+  function setMuted(on) {
+    if (bus) bus.gain.setTargetAtTime(on ? 0 : 0.5, audio.currentTime, 0.1);
+  }
+
+  return { init, setMode, setMuted };
+})();
+
+window.addEventListener('pointerdown', ensureAudio);
+window.addEventListener('keydown', ensureAudio);
 const sfx = {
   lane: () => tone(520, 0.05, 'triangle', 0.03, 120),
   jump: () => tone(330, 0.18, 'triangle', 0.06, 380),
@@ -246,38 +406,205 @@ for (let i = 0; i < 26; i++) {
   streams.push(s);
 }
 
-// ---------- Spielfigur: das dp-Logo als Datenpaket ----------
-const logoTex = canvasTex(256, 256, (g, w, h) => {
+// ---------- Spielfigur: dp-Datenchip ----------
+// Logo-Flächen (oben + Rückseite zur Kamera) und Leiterbahnen auf den übrigen Seiten.
+// Die Bahnen und der Logo-Ring leuchten über eine Emissive-Map und pulsieren im Spiel.
+const SKINS = {
+  classic: { name: 'Classic', frame: ['#c4c5c7', '#808184'], face: '#ffffff', trace: '#009fe3', text: '#009fe3', glow: 0x009fe3 },
+  night:   { name: 'Night',   frame: ['#3a3c40', '#1c1e21'], face: '#16191d', trace: '#38d6ff', text: '#38d6ff', glow: 0x38d6ff },
+  ice:     { name: 'Ice',     frame: ['#ffffff', '#cfe0ea'], face: '#ffffff', trace: '#5fc8f5', text: '#009fe3', glow: 0x5fc8f5 },
+};
+
+function seeded(seed) {
+  return () => {
+    seed = (seed * 16807) % 2147483647;
+    return (seed - 1) / 2147483646;
+  };
+}
+
+function frameFill(g, w, h, skin) {
   const grad = g.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, '#c4c5c7');
-  grad.addColorStop(1, '#808184');
+  grad.addColorStop(0, skin.frame[0]);
+  grad.addColorStop(1, skin.frame[1]);
   g.fillStyle = grad;
   g.fillRect(0, 0, w, h);
-  g.fillStyle = '#fff';
-  rr(g, 18, 18, w - 36, h - 36, 34);
-  g.fill();
-  g.fillStyle = '#009fe3';
-  g.font = `bold 128px ${FONT}`;
-  g.textAlign = 'center';
-  g.textBaseline = 'middle';
-  g.fillText('dp', w / 2, h / 2 + 6);
-});
-const frameMat = new THREE.MeshStandardMaterial({ color: 0xa3a4a7, roughness: 0.35, metalness: 0.25 });
-const logoMat = new THREE.MeshStandardMaterial({ map: logoTex, roughness: 0.4 });
+}
+
+// Zeichnet Leiterbahnen; bei glow=true nur die leuchtenden Teile auf Schwarz (Emissive-Map)
+function drawTraces(g, w, h, color, glow) {
+  const rnd = seeded(7);
+  g.strokeStyle = color;
+  g.fillStyle = color;
+  g.lineWidth = 5;
+  g.lineCap = 'round';
+  g.lineJoin = 'round';
+  for (let i = 0; i < 14; i++) {
+    const side = i % 4;
+    let x = side === 0 ? 0 : side === 1 ? w : 30 + rnd() * (w - 60);
+    let y = side === 2 ? 0 : side === 3 ? h : 30 + rnd() * (h - 60);
+    g.beginPath();
+    g.moveTo(x, y);
+    for (let s = 0; s < 3; s++) {
+      if ((s + side) % 2 === 0) x = clamp(x + (rnd() - 0.5) * 140 + (w / 2 - x) * 0.4, 24, w - 24);
+      else y = clamp(y + (rnd() - 0.5) * 140 + (h / 2 - y) * 0.4, 24, h - 24);
+      g.lineTo(x, y);
+    }
+    g.stroke();
+    g.beginPath();
+    g.arc(x, y, 8, 0, Math.PI * 2);
+    g.fill();
+  }
+  // Chip in der Mitte
+  g.lineWidth = 6;
+  rr(g, w / 2 - 46, h / 2 - 46, 92, 92, 12);
+  if (glow) g.stroke();
+  else {
+    g.stroke();
+    g.fillStyle = 'rgba(0,0,0,0.12)';
+    g.fill();
+  }
+}
+
+const skinCache = {};
+function skinMaterials(key) {
+  if (skinCache[key]) return skinCache[key];
+  const skin = SKINS[key];
+  const logo = canvasTex(256, 256, (g, w, h) => {
+    frameFill(g, w, h, skin);
+    g.fillStyle = skin.face;
+    rr(g, 18, 18, w - 36, h - 36, 34);
+    g.fill();
+    g.strokeStyle = skin.trace;
+    g.lineWidth = 5;
+    rr(g, 30, 30, w - 60, h - 60, 26);
+    g.stroke();
+    g.fillStyle = skin.text;
+    g.font = `bold 128px ${FONT}`;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText('dp', w / 2, h / 2 + 6);
+  });
+  const logoGlow = canvasTex(256, 256, (g, w, h) => {
+    g.fillStyle = '#000';
+    g.fillRect(0, 0, w, h);
+    g.strokeStyle = skin.trace;
+    g.lineWidth = 5;
+    rr(g, 30, 30, w - 60, h - 60, 26);
+    g.stroke();
+    if (key === 'night') {
+      g.fillStyle = skin.text;
+      g.font = `bold 128px ${FONT}`;
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText('dp', w / 2, h / 2 + 6);
+    }
+  });
+  const circuit = canvasTex(256, 256, (g, w, h) => {
+    frameFill(g, w, h, skin);
+    drawTraces(g, w, h, skin.trace, false);
+  });
+  const circuitGlow = canvasTex(256, 256, (g, w, h) => {
+    g.fillStyle = '#000';
+    g.fillRect(0, 0, w, h);
+    drawTraces(g, w, h, skin.trace, true);
+  });
+  const metal = key === 'ice' ? 0.05 : 0.35;
+  const side = new THREE.MeshStandardMaterial({ map: circuit, emissive: 0xffffff, emissiveMap: circuitGlow, roughness: 0.35, metalness: metal });
+  const face = new THREE.MeshStandardMaterial({ map: logo, emissive: 0xffffff, emissiveMap: logoGlow, roughness: 0.35, metalness: metal * 0.5 });
+  // BoxGeometry-Flächen: +x, -x, +y (oben), -y, +z (zur Kamera), -z
+  skinCache[key] = { list: [side, side, face, side, face, side], glowing: [side, face], glow: skin.glow };
+  return skinCache[key];
+}
+
 const PLAYER_SIZE = 1.2;
-const playerMesh = new THREE.Mesh(
-  new RoundedBoxGeometry(PLAYER_SIZE, PLAYER_SIZE, PLAYER_SIZE, 4, 0.18),
-  [frameMat, frameMat, logoMat, frameMat, logoMat, frameMat],
-);
+const HOVER = 0.22; // der Chip schwebt knapp über der Strecke
+let skinKey = SKINS[store.get('dplan-runner-skin', 'classic')] ? store.get('dplan-runner-skin', 'classic') : 'classic';
+let skin = skinMaterials(skinKey);
+const playerMesh = new THREE.Mesh(new RoundedBoxGeometry(PLAYER_SIZE, PLAYER_SIZE, PLAYER_SIZE, 4, 0.18), skin.list);
 playerMesh.castShadow = true;
 const playerGroup = new THREE.Group();
-playerMesh.position.y = PLAYER_SIZE / 2;
+playerMesh.position.y = PLAYER_SIZE / 2 + HOVER;
 playerGroup.add(playerMesh);
+
+// Kreisende Datenbits
+const orbit = new THREE.Group();
+const orbitMat = new THREE.MeshBasicMaterial({ color: skin.glow });
+for (let i = 0; i < 3; i++) {
+  const b = new THREE.Mesh(new THREE.OctahedronGeometry(0.09), orbitMat);
+  const a = (i / 3) * Math.PI * 2;
+  b.position.set(Math.cos(a) * 1.0, 0, Math.sin(a) * 1.0);
+  orbit.add(b);
+}
+orbit.rotation.x = 0.35;
+playerGroup.add(orbit);
+
+// Leuchten am Boden unter dem schwebenden Chip
+const glowTex = canvasTex(128, 128, (g, w, h) => {
+  const rg = g.createRadialGradient(w / 2, h / 2, 4, w / 2, h / 2, w / 2);
+  rg.addColorStop(0, 'rgba(255,255,255,1)');
+  rg.addColorStop(0.45, 'rgba(255,255,255,0.45)');
+  rg.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = rg;
+  g.fillRect(0, 0, w, h);
+});
+const groundGlow = new THREE.Mesh(
+  new THREE.PlaneGeometry(2.6, 2.6),
+  new THREE.MeshBasicMaterial({ map: glowTex, color: skin.glow, transparent: true, opacity: 0.6, depthWrite: false }),
+);
+groundGlow.rotation.x = -Math.PI / 2;
+groundGlow.position.y = 0.03;
+scene.add(groundGlow);
+
+// Lichtspuren hinter dem Chip
+const trailGeo = new THREE.BoxGeometry(0.09, 0.04, 0.5);
+const trail = [];
+for (let i = 0; i < 60; i++) {
+  const m = new THREE.Mesh(trailGeo, new THREE.MeshBasicMaterial({ color: skin.glow, transparent: true, depthWrite: false }));
+  m.visible = false;
+  scene.add(m);
+  trail.push({ mesh: m, life: 0 });
+}
+let trailIdx = 0, trailT = 0;
+function updateTrail(dt, dz) {
+  if (state === 'playing' && playerGroup.visible) {
+    trailT -= dt;
+    if (trailT <= 0) {
+      trailT = 0.02;
+      for (const side of [-1, 1]) {
+        const p = trail[trailIdx++ % trail.length];
+        p.life = 0.45;
+        p.mesh.visible = true;
+        p.mesh.position.set(player.x + side * 0.42, player.y + HOVER + 0.12, 0.55);
+        p.mesh.scale.set(1, 1, 1);
+      }
+    }
+  }
+  for (const p of trail) {
+    if (p.life <= 0) continue;
+    p.life -= dt;
+    p.mesh.position.z += dz;
+    p.mesh.material.opacity = Math.max(0, p.life / 0.45) * 0.8;
+    p.mesh.scale.x = p.mesh.scale.y = Math.max(0.1, p.life / 0.45);
+    if (p.life <= 0) p.mesh.visible = false;
+  }
+}
+
+function applySkin(key) {
+  if (!SKINS[key]) return;
+  skinKey = key;
+  skin = skinMaterials(key);
+  playerMesh.material = skin.list;
+  orbitMat.color.setHex(skin.glow);
+  groundGlow.material.color.setHex(skin.glow);
+  for (const p of trail) p.mesh.material.color.setHex(skin.glow);
+  store.set('dplan-runner-skin', key);
+  document.querySelectorAll('.skin-btn').forEach((b) => b.classList.toggle('active', b.dataset.skin === key));
+}
 const shield = new THREE.Mesh(
   new THREE.SphereGeometry(1.05, 24, 16),
   new THREE.MeshBasicMaterial({ color: C.fire, transparent: true, opacity: 0.22, depthWrite: false }),
 );
-shield.position.y = PLAYER_SIZE / 2;
+shield.position.y = PLAYER_SIZE / 2 + HOVER;
 shield.visible = false;
 const magnet = new THREE.Mesh(
   new THREE.TorusGeometry(1.0, 0.05, 8, 40),
@@ -600,6 +927,7 @@ function resetGame() {
 function newGame() {
   resetGame();
   state = 'playing';
+  music.setMode('run');
   $('hud').classList.remove('hidden');
   show(null);
   hudCache = {};
@@ -704,6 +1032,7 @@ function spawnGate() {
 function startChoose() {
   state = 'gate';
   gatePhase = 'choose';
+  music.setMode('gate');
   $('gateQ').textContent = currentQ.q;
   $('gateHint').classList.remove('hidden');
   $('gateResult').classList.add('hidden');
@@ -769,6 +1098,7 @@ function leaveGate() {
   }
   state = 'playing';
   player.invuln = 1;
+  music.setMode('run');
 }
 
 // ---------- Treffer & Power-ups ----------
@@ -788,6 +1118,7 @@ function damage() {
 
 function startDying() {
   state = 'dying';
+  music.setMode('menu');
   dyingT = 1.6;
   player.vy = 9;
   shake = 0.45;
@@ -856,6 +1187,7 @@ function update(dt) {
   }
 
   updatePlayer(dt);
+  updateTrail(dt, dz);
 
   if (!playing && !dying && !atGate) return;
 
@@ -969,9 +1301,13 @@ function update(dt) {
 function updatePlayer(dt) {
   const t = performance.now() / 1000;
   if (state === 'menu') {
-    player.x = Math.sin(t * 0.8) * 2.4;
-    player.y = 0.25 + Math.sin(t * 3) * 0.15;
-    playerMesh.rotation.y = Math.sin(t * 0.8) * 0.4;
+    // Im Menü dreht sich der Chip langsam und zeigt das gewählte Design
+    player.x = Math.sin(t * 0.6) * 1.6;
+    player.y = 0.25;
+    playerMesh.rotation.x = 0;
+    playerMesh.rotation.y = t * 0.7;
+    playerGroup.rotation.z = 0;
+    playerGroup.visible = true;
   } else {
     const targetX = LANES[player.lane];
     player.x += (targetX - player.x) * Math.min(1, dt * 14);
@@ -998,6 +1334,20 @@ function updatePlayer(dt) {
     }
   }
   playerGroup.position.set(player.x, player.y, 0);
+
+  const bob = state === 'dying' ? 0 : Math.sin(t * 4) * 0.05;
+  playerMesh.position.y = PLAYER_SIZE / 2 + HOVER + bob;
+  shield.position.y = playerMesh.position.y;
+  orbit.position.y = playerMesh.position.y;
+  orbit.rotation.y = t * 2.4;
+  orbit.visible = state !== 'dying';
+  const pulse = 0.55 + Math.sin(t * 5) * 0.35 + (powers.firewall > 0 ? 0.5 : 0);
+  for (const m of skin.glowing) m.emissiveIntensity = pulse;
+  groundGlow.position.x = player.x;
+  groundGlow.visible = playerGroup.visible && state !== 'over';
+  groundGlow.material.opacity = 0.55 * (1 - Math.min(1, player.y / 2.2));
+  groundGlow.scale.setScalar(1 + player.y * 0.25);
+
   shield.visible = powers.firewall > 0;
   shield.material.opacity = 0.16 + Math.sin(t * 10) * 0.06;
   magnet.visible = powers.cloud > 0;
@@ -1146,15 +1496,19 @@ function pause() {
   if (state !== 'playing') return;
   state = 'paused';
   show('pause');
+  if (audio) audio.suspend();
 }
 function resume() {
   if (state !== 'paused') return;
   state = 'playing';
   show(null);
+  if (audio) audio.resume();
 }
 function toMenu() {
   resetGame();
   state = 'menu';
+  if (audio) audio.resume();
+  music.setMode('menu');
   $('hud').classList.add('hidden');
   show('menu');
 }
@@ -1239,6 +1593,11 @@ $('btnBack').addEventListener('click', () => show('menu'));
 $('btnPause').addEventListener('click', () => (state === 'paused' ? resume() : pause()));
 $('btnResume').addEventListener('click', resume);
 $('btnGateGo').addEventListener('click', leaveGate);
+document.querySelectorAll('.skin-btn').forEach((b) => b.addEventListener('click', () => {
+  applySkin(b.dataset.skin);
+  sfx.power();
+}));
+applySkin(skinKey);
 $('btnQuit').addEventListener('click', toMenu);
 $('btnMenu').addEventListener('click', toMenu);
 const muteBtn = $('btnMute');
@@ -1247,6 +1606,7 @@ muteBtn.addEventListener('click', () => {
   muted = !muted;
   store.set('dplan-cd-muted', muted);
   muteBtn.classList.toggle('off', muted);
+  music.setMuted(muted);
 });
 
 // Testhilfe: mit ?debug in der URL unverwundbar spielen und direkt zum nächsten Gate springen
