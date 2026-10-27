@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>dplan Cyber Defense</title>
+  <meta name="description" content="Schütze das Firmennetzwerk vor Viren, Phishing und Ransomware – ein Arcade-Spiel mit Security-Check von dplan IT Services.">
+  <link rel="icon" href="assets/dplan-logo.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header id="hud" class="hidden">
+      <div class="hud-item">
+        <span class="lbl">Punkte</span>
+        <span id="hudScore" class="val">0</span>
+      </div>
+      <div class="hud-item">
+        <span class="lbl">Welle</span>
+        <span id="hudWave" class="val">1</span>
+      </div>
+      <div class="hud-item grow">
+        <span class="lbl">Netzwerk <span id="hudHealthPct">100 %</span></span>
+        <div class="bar"><div id="hudHealth" class="bar-fill"></div></div>
+      </div>
+      <div id="hudCombo" class="combo hidden">x2</div>
+      <div id="hudPowers" class="powers"></div>
+      <button id="btnMute" class="icon-btn" type="button" aria-label="Ton ein/aus" title="Ton ein/aus">♪</button>
+      <button id="btnPause" class="icon-btn" type="button" aria-label="Pause" title="Pause (P)">❚❚</button>
+    </header>
+
+    <main id="stage">
+      <canvas id="game" aria-label="Spielfeld"></canvas>
+
+      <!-- Startbildschirm -->
+      <section id="ovMenu" class="overlay">
+        <div class="card">
+          <img class="logo" src="assets/dplan-logo.png" alt="dplan IT Services">
+          <div class="brand-bar">Cyber Defense</div>
+          <p class="lead">Viren, Phishing-Mails und Ransomware greifen das Firmennetzwerk an. Halte sie mit Security-Patches auf – und beweise nach jeder Welle dein Wissen im <strong>Security-Check</strong>.</p>
+
+          <div class="howto">
+            <div><b>Steuerung</b><span>Maus / Finger bewegen oder ← → bzw. A D. Geschossen wird automatisch.</span></div>
+            <div><b>Power-ups</b><span>Einsammeln für Backup, Cloud-Dreifachschuss, Update-Schnellfeuer und Firewall.</span></div>
+            <div><b>Security-Check</b><span>Richtige Antworten bringen Bonuspunkte und reparieren das Netzwerk.</span></div>
+          </div>
+
+          <h3 class="section-title">Bedrohungen</h3>
+          <div id="legend" class="legend"></div>
+
+          <div class="actions">
+            <button id="btnStart" class="btn primary" type="button">Spiel starten</button>
+            <button id="btnScores" class="btn secondary" type="button">Bestenliste</button>
+          </div>
+          <p class="foot">Ein Spiel von dplan IT Services</p>
+        </div>
+      </section>
+
+      <!-- Security-Check -->
+      <section id="ovQuiz" class="overlay hidden">
+        <div class="card">
+          <div class="brand-bar">Security-Check</div>
+          <p class="kicker">Welle <span id="quizWave">1</span> abgewehrt!</p>
+          <h2 id="quizQ" class="question"></h2>
+          <div id="quizOpts" class="options"></div>
+          <div id="quizFeedback" class="feedback hidden">
+            <p id="quizResult" class="result"></p>
+            <p id="quizTip" class="tip"></p>
+          </div>
+          <div class="actions">
+            <button id="btnNext" class="btn primary hidden" type="button">Weiter</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Pause -->
+      <section id="ovPause" class="overlay hidden">
+        <div class="card small">
+          <div class="brand-bar">Pause</div>
+          <p class="lead">Kurze Kaffeepause? Das Netzwerk wartet.</p>
+          <div class="actions">
+            <button id="btnResume" class="btn primary" type="button">Weiterspielen</button>
+            <button id="btnQuit" class="btn secondary" type="button">Zum Menü</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Game Over -->
+      <section id="ovOver" class="overlay hidden">
+        <div class="card">
+          <div class="brand-bar danger">Netzwerk ausgefallen</div>
+          <div class="stats">
+            <div><span id="overScore" class="big">0</span><span>Punkte</span></div>
+            <div><span id="overWave" class="big">1</span><span>Wellen</span></div>
+            <div><span id="overQuiz" class="big">0/0</span><span>Security-Check</span></div>
+          </div>
+          <p id="overMsg" class="lead"></p>
+          <form id="saveForm" class="save hidden" autocomplete="off">
+            <label for="nameInput">Neuer Eintrag in der Bestenliste!</label>
+            <div class="row">
+              <input id="nameInput" maxlength="18" placeholder="Dein Name" required>
+              <button class="btn primary" type="submit">Speichern</button>
+            </div>
+          </form>
+          <ol id="overScores" class="scores"></ol>
+          <div class="actions">
+            <button id="btnAgain" class="btn primary" type="button">Nochmal spielen</button>
+            <button id="btnMenu" class="btn secondary" type="button">Zum Menü</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Bestenliste -->
+      <section id="ovScores" class="overlay hidden">
+        <div class="card">
+          <div class="brand-bar">Bestenliste</div>
+          <ol id="scoreList" class="scores"></ol>
+          <div class="actions">
+            <button id="btnBack" class="btn secondary" type="button">Zurück</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="game.js"></script>
+</body>
+</html>
