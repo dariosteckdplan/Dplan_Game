@@ -203,7 +203,10 @@ const music = (() => {
     boss:   [[57, 60, 64], [53, 57, 60], [50, 53, 57], [52, 56, 59]], // Am – F – Dm – E (harmonisch Moll)
     gate:   [[57, 60, 64], [53, 57, 62], [50, 55, 57], [52, 57, 59]], // schwebende Akkorde zum Nachdenken
   };
-  const ARP = [0, 1, 2, 1, 0, 2, 1, 2, 0, 1, 2, 3, 2, 1, 0, 1]; // 3 = Grundton eine Oktave höher
+  // Arpeggio-Muster je Teil (3 = Grundton eine Oktave höher, -1 = Pause) – so klingt jeder Teil eigenständig
+  const ARP = [0, 1, 2, 1, 0, 2, 1, 2, 0, 1, 2, 3, 2, 1, 0, 1];
+  const ARP_MENU = [0, -1, -1, 1, -1, -1, 2, -1, 3, -1, -1, 2, -1, -1, 1, -1];
+  const ARP_BOSS = [0, 3, 1, 3, 2, 3, 1, 3, 0, 3, 2, 3, 1, 2, 3, 2];
   const ROLL = [1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 1, 1]; // rollender Bass
   const LEAD_RUN = [
     76, 0, 74, 72, 0, 72, 74, 0, 72, 0, 69, 0, 67, 69, 0, 0,
@@ -217,10 +220,43 @@ const music = (() => {
   const LAYERS = ['kick', 'clap', 'hats', 'bass', 'dirt', 'arp', 'pad', 'lead', 'stab', 'heart'];
   const f = (m) => 440 * 2 ** ((m - 69) / 12);
 
-  let bus, filter, duck, verb, delay, shaper, timer = null;
+  let bus, filter, duck, verb, verbOut, delay, fb, wet, shaper, timer = null;
   const L = {};
   let mode = 'menu', lv = 1, danger = false, muffled = false;
   let step = 0, nextTime = 0, tr = 0, prog = PROG.normal;
+  // Alle Musik-Noten, die gerade klingen – damit beim Teilwechsel nichts nachhallt
+  const live = new Set();
+  let tracking = false;
+  function track(src, g) {
+    if (!tracking) return;
+    const e = { src, g };
+    live.add(e);
+    src.onended = () => live.delete(e);
+  }
+
+  // Sauberer Schnitt: laufende Noten ausblenden, Echo/Hall leeren, neuer Teil beginnt auf Takt 1
+  function cut() {
+    const now = audio.currentTime;
+    for (const e of live) {
+      try {
+        e.g.gain.cancelScheduledValues(now);
+        e.g.gain.setTargetAtTime(0.0001, now, 0.03);
+        e.src.stop(now + 0.2);
+      } catch { /* bereits beendet */ }
+    }
+    live.clear();
+    fb.gain.cancelScheduledValues(now);
+    fb.gain.setValueAtTime(0, now);
+    fb.gain.setValueAtTime(0.3, now + 0.5);
+    wet.gain.cancelScheduledValues(now);
+    wet.gain.setValueAtTime(0, now);
+    wet.gain.setValueAtTime(0.22, now + 0.5);
+    verbOut.gain.cancelScheduledValues(now);
+    verbOut.gain.setTargetAtTime(0.02, now, 0.05);
+    verbOut.gain.setTargetAtTime(0.35, now + 0.4, 0.3);
+    step = 0;
+    nextTime = now + 0.06;
+  }
 
   function impulse(sec) {
     const len = Math.floor(audio.sampleRate * sec);
@@ -251,13 +287,13 @@ const music = (() => {
     duck.connect(bus);
     verb = audio.createConvolver();
     verb.buffer = impulse(2.4);
-    const verbOut = audio.createGain();
+    verbOut = audio.createGain();
     verbOut.gain.value = 0.35;
     verb.connect(verbOut).connect(bus);
     delay = audio.createDelay(1);
-    const fb = audio.createGain();
+    fb = audio.createGain();
     fb.gain.value = 0.3;
-    const wet = audio.createGain();
+    wet = audio.createGain();
     wet.gain.value = 0.22;
     delay.connect(fb).connect(delay);
     delay.connect(wet).connect(bus);
@@ -305,6 +341,7 @@ const music = (() => {
     for (const d of Array.isArray(dest) ? dest : [dest]) g.connect(d);
     o.start(t);
     o.stop(t + dur + 0.05);
+    track(o, g);
     return o;
   }
   function nz(t, dur, vol, type, freq, dest, { q = 1, f1 = freq, attack = 0.003 } = {}) {
@@ -323,6 +360,7 @@ const music = (() => {
     for (const d of Array.isArray(dest) ? dest : [dest]) g.connect(d);
     src.start(t, Math.random());
     src.stop(t + dur + 0.05);
+    track(src, g);
   }
   function clap(t, vol, dest = L.clap.g) {
     nz(t, 0.16, vol, 'bandpass', 1500, dest, { q: 0.8 });
@@ -346,6 +384,7 @@ const music = (() => {
     g.connect(shaper);
     o.start(t);
     o.stop(t + dur + 0.05);
+    track(o, g);
   }
   // Sidechain: nach jeder Kick «atmen» Bass, Fläche und Melodie wieder ein
   function pump(t, stepDur) {
@@ -389,9 +428,13 @@ const music = (() => {
     const root = chord[0] - 24;
     const rolling = mode === 'boss' || lv >= 3;
     if (rolling ? ROLL[i] : i % 2 === 0) bassNote(f(root + (i % 8 === 6 ? 12 : 0)), t, STEP * (rolling ? 0.9 : 1.6));
-    // Arpeggio
-    const n = ARP[i] === 3 ? chord[0] + 12 : chord[ARP[i]];
-    v('square', f(n + 12), t, 0.12, 0.05, L.arp.g);
+    // Arpeggio – Menü ruhig und luftig, Boss treibend, am Gate keins
+    const pat = mode === 'boss' ? ARP_BOSS : mode === 'menu' ? ARP_MENU : mode === 'gate' ? null : ARP;
+    if (pat && pat[i] >= 0) {
+      const n = pat[i] === 3 ? chord[0] + 12 : chord[pat[i]];
+      if (mode === 'menu') v('triangle', f(n + 12), t, STEP * 3, 0.07, L.arp.g);
+      else v('square', f(n + 12), t, 0.12, 0.05, L.arp.g);
+    }
     // Fläche
     if (i === 0) {
       for (const m of chord) for (const det of [-10, 10]) v('sawtooth', f(m), t, STEP * 16 + 0.4, 0.03, L.pad.g, { attack: 0.5, detune: det });
@@ -420,7 +463,12 @@ const music = (() => {
     if (!audio || audio.state !== 'running') return;
     if (nextTime < audio.currentTime) nextTime = audio.currentTime + 0.05;
     while (nextTime < audio.currentTime + 0.15) {
-      playStep(step, nextTime);
+      tracking = true;
+      try {
+        playStep(step, nextTime);
+      } finally {
+        tracking = false;
+      }
       nextTime += 60 / bpm() / 4;
       step = (step + 1) % 128;
     }
@@ -437,18 +485,20 @@ const music = (() => {
       boss: { kick: 1, clap: 1, hats: 1, bass: 1, dirt: 0.75, arp: 0.5, pad: 0.45, lead: 0.9, stab: 0.85 },
     }[mode];
   }
-  function apply() {
+  function apply(fade = 0.4) {
     if (!L.kick) return;
     const m = mix();
     const now = audio.currentTime;
-    for (const k of LAYERS) L[k].g.gain.setTargetAtTime(k === 'heart' ? (danger ? 1 : 0) : m[k] || 0, now, 0.4);
+    for (const k of LAYERS) L[k].g.gain.setTargetAtTime(k === 'heart' ? (danger ? 1 : 0) : m[k] || 0, now, fade);
     if (mode !== 'off' && !timer) timer = setInterval(schedule, 25);
   }
 
   function setMode(m) {
     if (m === mode) return;
     mode = m;
-    apply();
+    if (!L.kick) return;
+    if (m !== 'off') cut();
+    apply(0.08);
   }
   function setLevel(n) {
     lv = n;
@@ -1732,11 +1782,11 @@ function applyPower(o) {
 // angekündigten Angriffen (rote Streifen am Boden) ausweichen. Bei 66 % und 33 %
 // Energie wechselt der Boss in die nächste, aggressivere Phase.
 const BOSSES = [
-  { key: 'worm', name: 'Der Wurm', tag: 'Kriecht durch jedes ungepatchte System', hp: 40, color: 0xe5484d, speed: 1.2, shots: ['virus', 'bug'], attacks: ['spit', 'spit', 'volley'] },
-  { key: 'phisher', name: 'Phish-Lord', tag: 'Hat den perfekten Köder für dich', hp: 55, color: 0xf08a24, speed: 1.4, shots: ['phishing', 'spam'], attacks: ['hook', 'mails', 'volley'] },
-  { key: 'botnet', name: 'Botnetz-Kern', tag: 'Tausend Drohnen, ein Wille', hp: 60, color: 0xff3355, speed: 1.0, shots: ['drone'], attacks: ['dive', 'dive', 'beam'], shield: true },
-  { key: 'ransom', name: 'Ransom-Koloss', tag: 'Zahle – oder verliere alles', hp: 80, color: 0x7c5cd6, speed: 0.8, shots: ['ransom', 'virus'], attacks: ['slam', 'locks', 'volley'] },
-  { key: 'zeroday', name: 'Zero-Day', tag: 'Die Lücke, die niemand kennt', hp: 100, color: 0xff2244, speed: 1.6, shots: ['virus', 'drone', 'ransom'], attacks: ['beam2', 'sweep', 'slam', 'volley'] },
+  { key: 'worm', name: 'Der Wurm', tag: 'Kriecht durch jedes ungepatchte System', hp: 75, color: 0xe5484d, speed: 1.2, shots: ['virus', 'bug'], attacks: ['spit', 'spit', 'volley'] },
+  { key: 'phisher', name: 'Phish-Lord', tag: 'Hat den perfekten Köder für dich', hp: 100, color: 0xf08a24, speed: 1.4, shots: ['phishing', 'spam'], attacks: ['hook', 'mails', 'volley'] },
+  { key: 'botnet', name: 'Botnetz-Kern', tag: 'Tausend Drohnen, ein Wille', hp: 115, color: 0xff3355, speed: 1.0, shots: ['drone'], attacks: ['dive', 'dive', 'beam'], shield: true },
+  { key: 'ransom', name: 'Ransom-Koloss', tag: 'Zahle – oder verliere alles', hp: 145, color: 0x7c5cd6, speed: 0.8, shots: ['ransom', 'virus'], attacks: ['slam', 'locks', 'volley'] },
+  { key: 'zeroday', name: 'Zero-Day', tag: 'Die Lücke, die niemand kennt', hp: 190, color: 0xff2244, speed: 1.6, shots: ['virus', 'drone', 'ransom'], attacks: ['beam2', 'sweep', 'slam', 'volley'] },
 ];
 const BOSS_Z = -25;
 const BOSS_SCALE = 1.5;
@@ -1933,7 +1983,8 @@ function buildBoss(key) {
     };
   }
   group.scale.setScalar(BOSS_SCALE);
-  return { group: shadowed(group), glow, hitW: hitW * 1.15, anim };
+  // Trefferzone: etwa eine Spur breit – man muss sich wirklich vor den Boss stellen
+  return { group: shadowed(group), glow, hitW: clamp(hitW * 0.7, 1.2, 1.9), anim };
 }
 
 function showBanner(title, sub, variant, kicker = '') {
@@ -1960,11 +2011,15 @@ function spawnBoss() {
   bossPending = false;
   const def = BOSSES[bossCount % BOSSES.length];
   const tier = Math.floor(bossCount / BOSSES.length);
+  // Jeder weitere Boss ist härter: kündigt kürzer an, greift öfter an, bewegt sich schneller
+  const rank = bossCount;
   bossCount++;
   const model = buildBoss(def.key);
-  const hp = Math.round(def.hp * (1 + tier * 0.6));
+  const hp = Math.round(def.hp * (1 + tier * 0.75));
   boss = {
-    def, tier, ...model,
+    def, tier, rank, ...model,
+    warn: Math.max(0.55, 1 - rank * 0.07), // Faktor für die Ankündigungszeit
+    aggro: 1 + rank * 0.12, // Faktor für die Angriffsfrequenz
     name: def.name + (ROMAN[tier] ?? ` ${tier + 1}`),
     hp, maxHp: hp, x: 0, z: -150, t: 0, wob: 0, phase: 1,
     attackT: 2.2, entering: true, flash: 0, slamT: 0,
@@ -2007,7 +2062,7 @@ function telegraph(lane, dur, color, then) {
 }
 
 function bossShot(b, lane, type, moving = false) {
-  telegraph(lane, 0.65, b.def.color, () => {
+  telegraph(lane, 0.65 * b.warn, b.def.color, () => {
     const o = addObstacle(type, lane, BOSS_Z + 2);
     o.static = !moving;
     o.fromBoss = true;
@@ -2019,7 +2074,7 @@ function bossShot(b, lane, type, moving = false) {
 function beamAttack(b, lanes, warn, color = b.def.color) {
   sfx.charge(LANES[lanes[0]] / 3);
   for (const lane of lanes) {
-    telegraph(lane, warn, color, () => {
+    telegraph(lane, warn * b.warn, color, () => {
       const m = new THREE.Mesh(beamGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 }));
       m.scale.set(1, 1, Math.abs(BOSS_Z) + 4);
       m.position.set(LANES[lane], 1.2, BOSS_Z / 2 + 2);
@@ -2032,9 +2087,9 @@ function beamAttack(b, lanes, warn, color = b.def.color) {
 }
 
 function slamAttack(b) {
-  b.slamT = 0.7;
+  b.slamT = 0.7 * b.warn;
   for (const lane of [0, 1, 2]) {
-    telegraph(lane, 0.7, 0xff5a36, () => {
+    telegraph(lane, 0.7 * b.warn, 0xff5a36, () => {
       if (lane !== 1) return;
       const o = addObstacle('wave', 1, BOSS_Z + 3);
       o.fromBoss = true;
@@ -2178,7 +2233,7 @@ function updateBoss(dt) {
     }
   }
   if (!b.dying) {
-    const sp = b.def.speed * (1 + (b.phase - 1) * 0.35);
+    const sp = b.def.speed * (1 + (b.phase - 1) * 0.35) * (1 + b.rank * 0.08);
     b.wob += dt * sp;
     let tx = Math.sin(b.wob * 0.55) * 2.6 + Math.sin(b.wob * 1.7) * 0.4;
     // Zero-Day teleportiert sich ab Phase 2 gelegentlich
@@ -2260,7 +2315,9 @@ function updateBoss(dt) {
   b.attackT -= dt;
   if (b.attackT <= 0) {
     bossAttack(b, pick(b.def.attacks));
-    b.attackT = rand(1.7, 2.5) / (1 + (b.phase - 1) * 0.35) / (1 + b.tier * 0.15);
+    // ab Phase 2 hängen spätere Bosse gerne einen zweiten Angriff an
+    if (b.phase >= 2 && Math.random() < 0.15 + b.rank * 0.07) later(b, 0.9, () => bossAttack(b, pick(b.def.attacks)));
+    b.attackT = rand(1.7, 2.5) / (1 + (b.phase - 1) * 0.35) / b.aggro;
   }
 }
 
@@ -2387,6 +2444,7 @@ function update(dt) {
 
   // Laser-Schüsse fliegen nach vorne und treffen das erste Hindernis in ihrer Bahn
   for (const b of bolts) {
+    b.prevZ = b.mesh.position.z;
     b.mesh.position.z -= 75 * dt;
     if (b.mesh.position.z < -110) b.dead = true;
     for (const o of objects) {
@@ -2399,8 +2457,10 @@ function update(dt) {
         else burst(tmpV.set(o.x, 1, o.mesh.position.z), 0x5fffe0, 6, 3);
       }
     }
+    // Treffer nur beim Durchflug durch die Boss-Ebene (nicht nachträglich)
     if (!b.dead && boss && !boss.entering && !boss.dying &&
-        Math.abs(b.mesh.position.x - boss.x) < boss.hitW && b.mesh.position.z < boss.z + 1.5) {
+        Math.abs(b.mesh.position.x - boss.x) < boss.hitW &&
+        b.prevZ >= boss.z - 1 && b.mesh.position.z <= boss.z + 1.5) {
       b.dead = true;
       hitBoss(b.mesh.position);
     }
@@ -2852,7 +2912,7 @@ if (new URLSearchParams(location.search).has('debug')) {
     // Boss Nr. n (0–4) sofort auftauchen lassen
     boss: (n = 0) => { bossCount = n; bossAt = dist; },
     killBoss: () => boss && !boss.dying && defeatBoss(),
-    look: () => ({ bossMix, bg: scene.background.getHexString(), bloom: bloom && bloom.strength }),
+    look: () => ({ bossMix, bg: scene.background.getHexString(), bloom: bloom && bloom.strength, audio: audio && audio.state }),
     bossHp: () => boss && { name: boss.name, hp: boss.hp, phase: boss.phase, x: boss.x, dying: boss.dying > 0 },
     nextGate: () => { nextGateAt = dist; },
     info: () => ({ state, dist: Math.round(dist), lives, lane: player.lane, gate: !!gate, gatesAsked, gatesCorrect }),

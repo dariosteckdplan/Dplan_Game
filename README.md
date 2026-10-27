@@ -13,7 +13,7 @@ Ein 3D-Browser-Spiel im dplan-Design für Mitarbeitende und Kunden: Als dp-Daten
   - Stufe 4: Slalom-Strecken
   - Stufe 5+: Viren wechseln unterwegs die Spur
   - Das Rechenzentrum wird dabei von Tag über Abend und Dämmerung zur Neon-Nacht.
-- **Bosskämpfe:** In der Mitte jeder geraden Stufe (2, 4, 6, 8, 10 …) greift ein Boss an. Der Chip feuert dann automatisch – man muss sich in die Spur des Bosses stellen und den angekündigten Angriffen (rote Streifen am Boden) ausweichen. Bei 66 % und 33 % Energie wird der Boss schneller und aggressiver. Sieg: Bonuspunkte, +1 Netzwerk und Power-up-Beute.
+- **Bosskämpfe:** In der Mitte jeder geraden Stufe (2, 4, 6, 8, 10 …) greift ein Boss an – jeder weitere ist zäher und aggressiver (kürzere Ankündigung, mehr und kombinierte Angriffe). Der Chip feuert dann automatisch – man muss sich in die Spur des Bosses stellen und den angekündigten Angriffen (rote Streifen am Boden) ausweichen. Bei 66 % und 33 % Energie wird der Boss schneller und aggressiver. Sieg: Bonuspunkte, +1 Netzwerk und Power-up-Beute.
   1. **Der Wurm** – spuckt Viren und Bugs
   2. **Phish-Lord** – Köder-Haken und Phishing-Mails
   3. **Botnetz-Kern** – Drohnen-Angriffe; verwundbar nur, wenn sein Schild offen ist
