@@ -115,6 +115,7 @@ function canvasTex(w, h, draw) {
 let audio = null;
 let master = null; // Kompressor vor dem Ausgang
 let sfxBus = null;
+let noiseBuf = null;
 let muted = store.get('dplan-cd-muted', false);
 
 // Browser erlauben Ton erst nach einer Interaktion – daher bei Klick/Taste starten
@@ -123,10 +124,15 @@ function ensureAudio() {
     if (!audio) {
       audio = new (window.AudioContext || window.webkitAudioContext)();
       master = audio.createDynamicsCompressor();
-      master.threshold.value = -14;
+      master.threshold.value = -12;
+      master.ratio.value = 4;
       master.connect(audio.destination);
       sfxBus = audio.createGain();
+      sfxBus.gain.value = 0.9;
       sfxBus.connect(master);
+      noiseBuf = audio.createBuffer(1, audio.sampleRate * 2, audio.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
       music.init();
     }
     if (audio.state === 'suspended' && state !== 'paused') audio.resume();
@@ -134,133 +140,279 @@ function ensureAudio() {
   return audio;
 }
 
-function tone(freq, dur, type = 'square', vol = 0.05, slide = 0, delay = 0) {
-  if (muted || !ensureAudio()) return;
+// Ausgang mit optionaler Stereo-Position (pan −1 = links … 1 = rechts)
+function out(pan = 0, dest = sfxBus) {
+  if (!pan || !audio.createStereoPanner) return dest;
+  const p = audio.createStereoPanner();
+  p.pan.value = clamp(pan, -1, 1);
+  p.connect(dest);
+  return p;
+}
+
+// Oszillator-Ton mit Tonhöhen-Fahrt f0 → f1
+function osc(type, f0, f1, dur, vol, { delay = 0, pan = 0, attack = 0.005, detune = 0, dest } = {}) {
+  if (muted || !ensureAudio()) return null;
   const t = audio.currentTime + delay;
   const o = audio.createOscillator();
-  const gain = audio.createGain();
+  const g = audio.createGain();
   o.type = type;
-  o.frequency.setValueAtTime(freq, t);
-  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), t + dur);
-  gain.gain.setValueAtTime(vol, t);
-  gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  o.connect(gain).connect(sfxBus);
+  o.detune.value = detune;
+  o.frequency.setValueAtTime(f0, t);
+  if (f1 && f1 !== f0) o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + attack);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g).connect(dest || out(pan));
   o.start(t);
-  o.stop(t + dur + 0.02);
+  o.stop(t + dur + 0.05);
+  return o;
+}
+
+// Gefiltertes Rauschen mit Filter-Fahrt f0 → f1 (Whoosh, Explosion, Becken …)
+function noise(dur, vol, { type = 'bandpass', f0 = 1000, f1 = f0, q = 1, delay = 0, pan = 0, attack = 0.005, dest } = {}) {
+  if (muted || !ensureAudio()) return;
+  const t = audio.currentTime + delay;
+  const src = audio.createBufferSource();
+  src.buffer = noiseBuf;
+  const flt = audio.createBiquadFilter();
+  flt.type = type;
+  flt.Q.value = q;
+  flt.frequency.setValueAtTime(f0, t);
+  if (f1 !== f0) flt.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+  const g = audio.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + attack);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(flt).connect(g).connect(dest || out(pan));
+  src.start(t, Math.random());
+  src.stop(t + dur + 0.05);
+}
+
+// Einfacher Ton (Kurzform)
+function tone(freq, dur, type = 'square', vol = 0.05, slide = 0, delay = 0) {
+  osc(type, freq, slide ? freq + slide : 0, dur, vol, { delay });
 }
 
 // ---------- Soundtrack: «Datacenter Drive» ----------
-// Live erzeugter Elektro-Loop in a-Moll (Am – F – C – G), 116 BPM.
-// Je nach Spielsituation werden die Spuren (Beat, Bass, Arpeggio, Fläche) ein-/ausgeblendet.
+// Live erzeugter Elektro-Track. Er wächst mit dem Spiel:
+// höhere Stufe = schneller, höhere Tonart, mehr Spuren; Boss = eigene, düstere Harmonik.
+// Kick «pumpt» die übrigen Spuren (Sidechain), dazu Hall, Echo, Riser und Impacts.
 const music = (() => {
-  const STEP = 60 / 116 / 4; // Sechzehntel
-  const CHORDS = [[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]];
-  const BASS = [45, 41, 36, 43];
+  const PROG = {
+    normal: [[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]], // Am – F – C – G
+    boss:   [[57, 60, 64], [53, 57, 60], [50, 53, 57], [52, 56, 59]], // Am – F – Dm – E (harmonisch Moll)
+    gate:   [[57, 60, 64], [53, 57, 62], [50, 55, 57], [52, 57, 59]], // schwebende Akkorde zum Nachdenken
+  };
   const ARP = [0, 1, 2, 1, 0, 2, 1, 2, 0, 1, 2, 3, 2, 1, 0, 1]; // 3 = Grundton eine Oktave höher
-  const LEAD = [ // Melodie über 4 Takte (MIDI, 0 = Pause), je Achtel
+  const ROLL = [1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 1, 1]; // rollender Bass
+  const LEAD_RUN = [
     76, 0, 74, 72, 0, 72, 74, 0, 72, 0, 69, 0, 67, 69, 0, 0,
     72, 0, 74, 76, 0, 79, 76, 0, 74, 0, 71, 0, 74, 0, 0, 0,
   ];
-  const MIX = {
-    off:  { drums: 0, bass: 0, arp: 0, pad: 0, lead: 0 },
-    menu: { drums: 0, bass: 0.5, arp: 0.6, pad: 1, lead: 0 },
-    run:  { drums: 1, bass: 1, arp: 0.8, pad: 0.45, lead: 0.7 },
-    gate: { drums: 0, bass: 0.3, arp: 0.35, pad: 1, lead: 0 },
-  };
-  const freq = (m) => 440 * 2 ** ((m - 69) / 12);
-  let bus, layers, noise, timer = null;
-  let mode = 'menu', step = 0, nextTime = 0;
+  const LEAD_BOSS = [
+    69, 0, 72, 76, 0, 76, 74, 72, 72, 0, 69, 65, 0, 69, 72, 0,
+    74, 0, 77, 81, 0, 81, 79, 77, 76, 0, 80, 83, 0, 83, 80, 76,
+  ];
+  const TRANSPOSE = [0, 0, 2, 3, 5, 7]; // Tonart steigt mit der Stufe
+  const LAYERS = ['kick', 'clap', 'hats', 'bass', 'dirt', 'arp', 'pad', 'lead', 'stab', 'heart'];
+  const f = (m) => 440 * 2 ** ((m - 69) / 12);
+
+  let bus, filter, duck, verb, delay, shaper, timer = null;
+  const L = {};
+  let mode = 'menu', lv = 1, danger = false, muffled = false;
+  let step = 0, nextTime = 0, tr = 0, prog = PROG.normal;
+
+  function impulse(sec) {
+    const len = Math.floor(audio.sampleRate * sec);
+    const buf = audio.createBuffer(2, len, audio.sampleRate);
+    for (let c = 0; c < 2; c++) {
+      const d = buf.getChannelData(c);
+      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len) ** 3;
+    }
+    return buf;
+  }
+  function distCurve(k) {
+    const c = new Float32Array(1024);
+    for (let i = 0; i < 1024; i++) {
+      const x = (i / 1023) * 2 - 1;
+      c[i] = ((3 + k) * x * 20 * (Math.PI / 180)) / (Math.PI + k * Math.abs(x));
+    }
+    return c;
+  }
 
   function init() {
     bus = audio.createGain();
-    bus.gain.value = muted ? 0 : 0.5;
-    bus.connect(master);
-    const mk = (filterType, f) => {
-      const g = audio.createGain();
-      g.gain.value = 0;
-      if (!filterType) { g.connect(bus); return g; }
-      const flt = audio.createBiquadFilter();
-      flt.type = filterType;
-      flt.frequency.value = f;
-      g.connect(flt).connect(bus);
-      return g;
-    };
-    layers = { drums: mk(), bass: mk('lowpass', 600), arp: mk('lowpass', 2200), pad: mk('lowpass', 1100), lead: mk('lowpass', 3000) };
-    // Echo für Arpeggio und Melodie
-    const delay = audio.createDelay(1);
-    delay.delayTime.value = STEP * 3;
+    bus.gain.value = muted ? 0 : 0.55;
+    filter = audio.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 18000;
+    bus.connect(filter).connect(master);
+    duck = audio.createGain();
+    duck.connect(bus);
+    verb = audio.createConvolver();
+    verb.buffer = impulse(2.4);
+    const verbOut = audio.createGain();
+    verbOut.gain.value = 0.35;
+    verb.connect(verbOut).connect(bus);
+    delay = audio.createDelay(1);
     const fb = audio.createGain();
-    fb.gain.value = 0.32;
+    fb.gain.value = 0.3;
     const wet = audio.createGain();
-    wet.gain.value = 0.28;
+    wet.gain.value = 0.22;
     delay.connect(fb).connect(delay);
     delay.connect(wet).connect(bus);
-    layers.arp.connect(delay);
-    layers.lead.connect(delay);
-    noise = audio.createBuffer(1, audio.sampleRate, audio.sampleRate);
-    const d = noise.getChannelData(0);
-    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-    setMode(mode);
+    const mk = (dest, fType, fFreq) => {
+      const g = audio.createGain();
+      g.gain.value = 0;
+      let node = g;
+      if (fType) {
+        node = audio.createBiquadFilter();
+        node.type = fType;
+        node.frequency.value = fFreq;
+        g.connect(node);
+      }
+      node.connect(dest);
+      return { g, node };
+    };
+    L.kick = mk(bus);
+    L.clap = mk(bus);
+    L.hats = mk(bus);
+    L.heart = mk(bus, 'lowpass', 220);
+    L.bass = mk(duck);
+    L.dirt = mk(duck, 'lowpass', 2400);
+    L.arp = mk(duck, 'lowpass', 2600);
+    L.pad = mk(duck, 'lowpass', 1400);
+    L.lead = mk(duck, 'lowpass', 3600);
+    L.stab = mk(duck, 'lowpass', 3200);
+    for (const k of ['arp', 'lead']) L[k].node.connect(delay);
+    for (const k of ['lead', 'pad', 'clap', 'stab']) L[k].node.connect(verb);
+    shaper = audio.createWaveShaper();
+    shaper.curve = distCurve(60);
+    shaper.connect(L.dirt.g);
+    apply();
   }
 
-  function voice(type, f, t, dur, vol, dest, attack = 0.005, detune = 0) {
+  function v(type, freq, t, dur, vol, dest, { attack = 0.005, detune = 0 } = {}) {
     const o = audio.createOscillator();
     const g = audio.createGain();
     o.type = type;
-    o.frequency.setValueAtTime(f, t);
+    o.frequency.setValueAtTime(freq, t);
     o.detune.value = detune;
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(vol, t + attack);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g).connect(dest);
+    o.connect(g);
+    for (const d of Array.isArray(dest) ? dest : [dest]) g.connect(d);
     o.start(t);
     o.stop(t + dur + 0.05);
     return o;
   }
-
-  function hit(t, filterType, f, dur, vol) {
+  function nz(t, dur, vol, type, freq, dest, { q = 1, f1 = freq, attack = 0.003 } = {}) {
     const src = audio.createBufferSource();
-    src.buffer = noise;
+    src.buffer = noiseBuf;
     const flt = audio.createBiquadFilter();
-    flt.type = filterType;
-    flt.frequency.value = f;
+    flt.type = type;
+    flt.Q.value = q;
+    flt.frequency.setValueAtTime(freq, t);
+    if (f1 !== freq) flt.frequency.exponentialRampToValueAtTime(f1, t + dur);
     const g = audio.createGain();
-    g.gain.setValueAtTime(vol, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + attack);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    src.connect(flt).connect(g).connect(layers.drums);
-    src.start(t);
-    src.stop(t + dur + 0.02);
+    src.connect(flt).connect(g);
+    for (const d of Array.isArray(dest) ? dest : [dest]) g.connect(d);
+    src.start(t, Math.random());
+    src.stop(t + dur + 0.05);
+  }
+  function clap(t, vol, dest = L.clap.g) {
+    nz(t, 0.16, vol, 'bandpass', 1500, dest, { q: 0.8 });
+    nz(t + 0.012, 0.12, vol * 0.7, 'bandpass', 1800, dest, { q: 0.8 });
+  }
+  function bassNote(freq, t, dur) {
+    const o = audio.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(freq, t);
+    const flt = audio.createBiquadFilter();
+    flt.type = 'lowpass';
+    flt.Q.value = 6;
+    flt.frequency.setValueAtTime(1600, t);
+    flt.frequency.exponentialRampToValueAtTime(160, t + dur);
+    const g = audio.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.4, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(flt).connect(g);
+    g.connect(L.bass.g);
+    g.connect(shaper);
+    o.start(t);
+    o.stop(t + dur + 0.05);
+  }
+  // Sidechain: nach jeder Kick «atmen» Bass, Fläche und Melodie wieder ein
+  function pump(t, stepDur) {
+    const depth = mode === 'boss' ? 0.6 : mode === 'run' ? Math.min(0.6, 0.3 + lv * 0.05) : 0;
+    if (!depth) return;
+    duck.gain.cancelScheduledValues(t);
+    duck.gain.setValueAtTime(1 - depth, t);
+    duck.gain.linearRampToValueAtTime(1, t + stepDur * 3.2);
   }
 
+  const bpm = () => (mode === 'boss' ? 138 : mode === 'run' ? Math.min(140, 112 + (lv - 1) * 4) : mode === 'gate' ? 96 : 104);
+
   function playStep(s, t) {
-    const bar = Math.floor(s / 16) % 4;
+    const STEP = 60 / bpm() / 4;
     const i = s % 16;
-    const chord = CHORDS[bar];
-    // Beat
+    const bar = Math.floor(s / 16) % 4;
+    if (i === 0) {
+      prog = PROG[mode === 'boss' ? 'boss' : mode === 'gate' ? 'gate' : 'normal'];
+      if (mode === 'run' || mode === 'boss') tr = TRANSPOSE[Math.min(lv - 1, TRANSPOSE.length - 1)];
+      else if (mode === 'menu') tr = 0;
+    }
+    const chord = prog[bar].map((n) => n + tr);
+    const hard = mode === 'boss' || lv >= 4;
+
+    // Kick + Pumpen
     if (i % 4 === 0) {
-      const k = voice('sine', 150, t, 0.28, 0.9, layers.drums);
-      k.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+      const k = v('sine', 165, t, 0.3, 1, L.kick.g);
+      k.frequency.exponentialRampToValueAtTime(40, t + 0.11);
+      nz(t, 0.02, 0.25, 'highpass', 3000, L.kick.g);
+      pump(t, STEP);
     }
-    if (i === 4 || i === 12) {
-      hit(t, 'bandpass', 1900, 0.16, 0.45);
-      voice('triangle', 190, t, 0.08, 0.15, layers.drums);
+    // Clap und Wirbel am Ende jeder Phrase
+    if (i === 4 || i === 12) clap(t, 0.5);
+    if (bar === 3 && i >= 13) clap(t, 0.2 + (i - 13) * 0.12);
+    // Hi-Hats (offen auf den Offbeats bei hartem Groove)
+    if (i % 2 === 1 || hard) {
+      const open = hard && i % 4 === 2;
+      nz(t, open ? 0.18 : 0.035, i % 2 ? 0.16 : 0.08, 'highpass', open ? 7000 : 8500, L.hats.g);
     }
-    if (i % 2 === 1) hit(t, 'highpass', 7500, 0.04, i % 4 === 3 ? 0.07 : 0.16);
-    // Bass: Achtel mit Oktavsprung
-    if (i % 2 === 0) voice('sawtooth', freq(BASS[bar] + (i % 4 === 2 ? 12 : 0)), t, STEP * 1.7, 0.32, layers.bass);
+    // Bass
+    const root = chord[0] - 24;
+    const rolling = mode === 'boss' || lv >= 3;
+    if (rolling ? ROLL[i] : i % 2 === 0) bassNote(f(root + (i % 8 === 6 ? 12 : 0)), t, STEP * (rolling ? 0.9 : 1.6));
     // Arpeggio
     const n = ARP[i] === 3 ? chord[0] + 12 : chord[ARP[i]];
-    voice('square', freq(n + 12), t, 0.13, 0.06, layers.arp);
-    // Fläche: pro Takt ein weicher Akkord aus verstimmten Sägezähnen
+    v('square', f(n + 12), t, 0.12, 0.05, L.arp.g);
+    // Fläche
     if (i === 0) {
-      for (const m of chord) {
-        for (const det of [-9, 9]) voice('sawtooth', freq(m), t, STEP * 16 + 0.5, 0.035, layers.pad, 0.45, det);
+      for (const m of chord) for (const det of [-10, 10]) v('sawtooth', f(m), t, STEP * 16 + 0.4, 0.03, L.pad.g, { attack: 0.5, detune: det });
+    }
+    // Supersaw-Stabs auf den Offbeats
+    if (hard && i % 4 === 2) {
+      for (const m of chord) for (const det of [-16, 0, 16]) v('sawtooth', f(m + 12), t, 0.15, 0.02, L.stab.g, { detune: det });
+    }
+    // Melodie
+    if (i % 2 === 0) {
+      const arr = mode === 'boss' ? LEAD_BOSS : LEAD_RUN;
+      const note = arr[Math.floor(s / 2) % arr.length];
+      if (note) {
+        v('sawtooth', f(note + tr), t, STEP * 2.6, 0.06, L.lead.g, { attack: 0.01, detune: -7 });
+        v('square', f(note + tr), t, STEP * 2.6, 0.035, L.lead.g, { attack: 0.01, detune: 7 });
       }
     }
-    // Melodie (Achtel)
-    if (i % 2 === 0) {
-      const note = LEAD[(Math.floor(s / 2)) % LEAD.length];
-      if (note) voice('triangle', freq(note), t, STEP * 3, 0.12, layers.lead, 0.01);
+    // Herzschlag bei nur noch einem Leben
+    if (danger && (i === 0 || i === 3 || i === 8 || i === 11)) {
+      const h = v('sine', i % 8 === 0 ? 75 : 62, t, 0.24, 1, L.heart.g);
+      h.frequency.exponentialRampToValueAtTime(38, t + 0.2);
     }
   }
 
@@ -269,38 +421,209 @@ const music = (() => {
     if (nextTime < audio.currentTime) nextTime = audio.currentTime + 0.05;
     while (nextTime < audio.currentTime + 0.15) {
       playStep(step, nextTime);
-      nextTime += STEP;
+      nextTime += 60 / bpm() / 4;
       step = (step + 1) % 128;
     }
   }
 
-  function setMode(m) {
-    mode = m;
-    if (!layers) return;
+  function mix() {
+    if (mode === 'run') {
+      return { kick: 1, clap: lv >= 2 ? 0.9 : 0, hats: lv >= 2 ? 1 : 0.7, bass: 1, dirt: lv >= 4 ? 0.5 : 0, arp: 0.65, pad: 0.4, lead: lv >= 3 ? 0.8 : 0, stab: lv >= 4 ? 0.7 : 0 };
+    }
+    return {
+      off: {},
+      menu: { bass: 0.45, arp: 0.55, pad: 0.9 },
+      gate: { bass: 0.3, arp: 0.3, pad: 1, hats: 0.25 },
+      boss: { kick: 1, clap: 1, hats: 1, bass: 1, dirt: 0.75, arp: 0.5, pad: 0.45, lead: 0.9, stab: 0.85 },
+    }[mode];
+  }
+  function apply() {
+    if (!L.kick) return;
+    const m = mix();
     const now = audio.currentTime;
-    for (const k in layers) layers[k].gain.setTargetAtTime(MIX[m][k], now, 0.5);
-    if (m !== 'off' && !timer) timer = setInterval(schedule, 25);
+    for (const k of LAYERS) L[k].g.gain.setTargetAtTime(k === 'heart' ? (danger ? 1 : 0) : m[k] || 0, now, 0.4);
+    if (mode !== 'off' && !timer) timer = setInterval(schedule, 25);
   }
 
+  function setMode(m) {
+    if (m === mode) return;
+    mode = m;
+    apply();
+  }
+  function setLevel(n) {
+    lv = n;
+    apply();
+  }
+  function setDanger(on) {
+    if (on === danger) return;
+    danger = on;
+    apply();
+  }
+  // Gedämpfter Klang (Zeitlupe)
+  function setMuffle(on) {
+    if (on === muffled || !filter) return;
+    muffled = on;
+    filter.frequency.setTargetAtTime(on ? 700 : 18000, audio.currentTime, 0.15);
+  }
   function setMuted(on) {
-    if (bus) bus.gain.setTargetAtTime(on ? 0 : 0.5, audio.currentTime, 0.1);
+    if (bus) bus.gain.setTargetAtTime(on ? 0 : 0.55, audio.currentTime, 0.1);
   }
 
-  return { init, setMode, setMuted };
+  // Spannungsaufbau: Rauschen steigt, Trommelwirbel wird immer schneller
+  function riser(dur = 2) {
+    if (!bus || muted) return;
+    const t = audio.currentTime + 0.02;
+    nz(t, dur, 0.22, 'highpass', 300, bus, { f1: 9000, attack: dur * 0.9 });
+    let x = 0;
+    let gap = 0.25;
+    while (x < dur) {
+      clap(t + x, 0.1 + (0.3 * x) / dur, bus);
+      x += gap;
+      gap = Math.max(0.045, gap * 0.84);
+    }
+    v('sawtooth', 110, t, dur, 0.04, bus, { attack: dur * 0.9 }).frequency.exponentialRampToValueAtTime(440, t + dur);
+  }
+  // Wuchtiger Einschlag mit Sub-Bass und Crash-Becken
+  function impact() {
+    if (!bus || muted) return;
+    const t = audio.currentTime + 0.01;
+    v('sine', 95, t, 1.4, 1, bus).frequency.exponentialRampToValueAtTime(28, t + 1.2);
+    nz(t, 2.2, 0.3, 'highpass', 5000, [bus, verb]);
+    nz(t, 0.4, 0.4, 'lowpass', 3000, bus, { f1: 120 });
+  }
+  function downlifter() {
+    if (!bus || muted) return;
+    nz(audio.currentTime + 0.01, 1.3, 0.22, 'bandpass', 6000, bus, { f1: 200, q: 1.2, attack: 0.02 });
+  }
+  // Boss-Auftritt: dunkler Bläser-Akkord, Gong und Einschlag
+  function stinger() {
+    if (!bus || muted) return;
+    const t = audio.currentTime + 0.01;
+    const flt = audio.createBiquadFilter();
+    flt.type = 'lowpass';
+    flt.frequency.setValueAtTime(200, t);
+    flt.frequency.exponentialRampToValueAtTime(3200, t + 0.8);
+    flt.connect(bus);
+    flt.connect(verb);
+    for (const m of [33, 45, 52, 57, 60]) for (const det of [-12, 12]) v('sawtooth', f(m), t, 2.6, 0.05, flt, { attack: 0.08, detune: det });
+    v('sine', 110, t, 3.5, 0.35, [bus, verb]).frequency.exponentialRampToValueAtTime(70, t + 3.5);
+    impact();
+  }
+  // Tonband-Stopp bei Game Over: Klang wird dumpf und erstirbt
+  function tapeStop() {
+    if (!bus) return;
+    const t = audio.currentTime;
+    mode = 'off';
+    filter.frequency.cancelScheduledValues(t);
+    filter.frequency.setValueAtTime(filter.frequency.value, t);
+    filter.frequency.exponentialRampToValueAtTime(120, t + 1.4);
+    bus.gain.setTargetAtTime(0, t + 0.7, 0.35);
+    setTimeout(() => {
+      if (mode === 'off') setMode('menu');
+      muffled = false;
+      filter.frequency.cancelScheduledValues(audio.currentTime);
+      filter.frequency.setTargetAtTime(18000, audio.currentTime, 0.3);
+      bus.gain.setTargetAtTime(muted ? 0 : 0.55, audio.currentTime, 0.6);
+    }, 2000);
+  }
+
+  return { init, setMode, setLevel, setDanger, setMuffle, setMuted, riser, impact, downlifter, stinger, tapeStop };
 })();
 
 window.addEventListener('pointerdown', ensureAudio);
 window.addEventListener('keydown', ensureAudio);
+
+// ---------- Effekte ----------
+const PENTA = [0, 3, 5, 7, 10, 12, 15, 17, 19, 22, 24];
+let bitCombo = 0, bitComboAt = 0;
+const note = (m) => 440 * 2 ** ((m - 69) / 12);
 const sfx = {
-  lane: () => tone(520, 0.05, 'triangle', 0.03, 120),
-  jump: () => tone(330, 0.18, 'triangle', 0.06, 380),
-  bit: () => tone(1180, 0.07, 'triangle', 0.035, 240),
-  hit: () => tone(120, 0.35, 'sawtooth', 0.08, -60),
-  smash: () => tone(200, 0.2, 'sawtooth', 0.05, -150),
-  power: () => { tone(660, 0.08, 'triangle', 0.07); tone(990, 0.12, 'triangle', 0.07, 0, 0.08); },
-  gate: () => { tone(440, 0.1, 'triangle', 0.06); tone(660, 0.15, 'triangle', 0.06, 0, 0.1); },
-  correct: () => { tone(523, 0.1, 'triangle', 0.08); tone(659, 0.1, 'triangle', 0.08, 0, 0.1); tone(784, 0.18, 'triangle', 0.08, 0, 0.2); },
-  wrong: () => { tone(300, 0.15, 'square', 0.05); tone(220, 0.25, 'square', 0.05, 0, 0.15); },
+  lane: (dir = 0) => noise(0.12, 0.08, { f0: 900, f1: 3200, q: 1.2, pan: dir * 0.5 }),
+  jump: () => {
+    noise(0.28, 0.07, { f0: 400, f1: 3000, q: 0.8 });
+    osc('triangle', 280, 720, 0.22, 0.05);
+  },
+  // Datenbits in Serie steigen die Tonleiter hinauf
+  bit: () => {
+    const now = performance.now();
+    bitCombo = now - bitComboAt < 900 ? bitCombo + 1 : 0;
+    bitComboAt = now;
+    const fr = note(81 + PENTA[Math.min(bitCombo, PENTA.length - 1)]);
+    osc('sine', fr, 0, 0.18, 0.06);
+    osc('triangle', fr * 2, 0, 0.1, 0.02, { delay: 0.03 });
+  },
+  hit: () => {
+    osc('sine', 140, 35, 0.5, 0.5);
+    noise(0.35, 0.3, { type: 'lowpass', f0: 4000, f1: 200 });
+    osc('square', 110, 70, 0.25, 0.07);
+    osc('square', 117, 72, 0.25, 0.07);
+  },
+  smash: (pan = 0) => {
+    noise(0.4, 0.22, { type: 'lowpass', f0: 5000, f1: 150, pan });
+    osc('sine', 100, 40, 0.3, 0.28, { pan });
+  },
+  laser: (pan = 0) => {
+    osc('square', 1900, 280, 0.09, 0.025, { pan });
+    osc('sawtooth', 2400, 600, 0.06, 0.012, { pan });
+  },
+  // knapp vorbeigezischt
+  whoosh: (pan = 0) => noise(0.32, 0.13, { f0: 500, f1: 4200, q: 2, pan, attack: 0.1 }),
+  power: () => [0, 4, 7, 12, 16].forEach((s, k) => osc('triangle', note(72 + s), 0, 0.22, 0.06, { delay: k * 0.05 })),
+  gate: () => {
+    for (const m of [57, 64, 69]) osc('sawtooth', note(m), 0, 1.2, 0.03, { attack: 0.3 });
+    osc('sine', note(81), 0, 1, 0.04, { delay: 0.2 });
+  },
+  correct: () => {
+    [0, 4, 7, 12].forEach((s, k) => osc('triangle', note(72 + s), 0, 0.35, 0.08, { delay: k * 0.07 }));
+    osc('sine', note(96), 0, 0.7, 0.03, { delay: 0.28 });
+  },
+  wrong: () => {
+    osc('sawtooth', 220, 110, 0.55, 0.06);
+    osc('sawtooth', 233, 116, 0.55, 0.06);
+  },
+  scan: () => {
+    noise(0.9, 0.22, { type: 'highpass', f0: 200, f1: 6000 });
+    osc('sine', 60, 30, 0.9, 0.4);
+  },
+  levelUp: () => {
+    music.impact();
+    for (const m of [60, 64, 67, 72]) for (const det of [-10, 10]) osc('sawtooth', note(m), 0, 0.8, 0.025, { detune: det, delay: 0.05 });
+  },
+  start: () => {
+    osc('sawtooth', 80, 420, 0.6, 0.05);
+    noise(0.6, 0.1, { f0: 200, f1: 5000 });
+  },
+  powerDown: () => osc('sawtooth', 420, 30, 1.4, 0.08),
+  warn: () => {
+    osc('square', 880, 0, 0.14, 0.05);
+    osc('square', 660, 0, 0.14, 0.05, { delay: 0.18 });
+  },
+  bossHit: (pan = 0) => {
+    osc('square', 320, 180, 0.07, 0.035, { pan });
+    noise(0.06, 0.06, { f0: 3000, pan });
+  },
+  shieldBlock: (pan = 0) => osc('triangle', 1800, 2400, 0.08, 0.04, { pan }),
+  roar: () => {
+    osc('sawtooth', 70, 45, 1.2, 0.12, { attack: 0.1 });
+    osc('sawtooth', 73, 47, 1.2, 0.12, { attack: 0.1 });
+    noise(1.2, 0.18, { type: 'lowpass', f0: 600, f1: 150, attack: 0.1 });
+  },
+  charge: (pan = 0) => osc('sawtooth', 200, 900, 0.9, 0.035, { pan, attack: 0.6 }),
+  beam: (pan = 0) => {
+    noise(0.55, 0.2, { type: 'lowpass', f0: 2500, f1: 400, pan });
+    osc('sawtooth', 90, 60, 0.55, 0.1, { pan });
+  },
+  slam: () => {
+    osc('sine', 80, 25, 0.9, 0.6);
+    noise(0.6, 0.3, { type: 'lowpass', f0: 1500, f1: 80 });
+  },
+  bossDown: () => {
+    for (let k = 0; k < 6; k++) {
+      noise(0.6, 0.25, { type: 'lowpass', f0: 4000, f1: 100, delay: k * 0.22, pan: rand(-0.8, 0.8) });
+      osc('sine', 120, 30, 0.6, 0.35, { delay: k * 0.22 });
+    }
+    music.impact();
+  },
 };
 
 // ---------- Renderer & Szene ----------
@@ -422,6 +745,7 @@ for (const side of [-1, 1]) {
 // Kabelbrücken über der Strecke
 const beamMat = new THREE.MeshStandardMaterial({ color: 0x9c9da0, roughness: 0.5 });
 const beams = [];
+const signs = [];
 // dplan-Schild auf jeder zweiten Kabelbrücke
 const logoMap = new THREE.TextureLoader().load('assets/dplan-logo.png');
 logoMap.colorSpace = THREE.SRGBColorSpace;
@@ -440,7 +764,10 @@ for (let i = 0; i < 6; i++) {
     frame.position.set(0, 0.16, 0);
     const logo = new THREE.Mesh(new THREE.PlaneGeometry(3.5, 1.09), signLogoMat);
     logo.position.set(0, 0.85, 0.07);
-    b.add(panel, frame, logo);
+    const sign = new THREE.Group();
+    sign.add(panel, frame, logo);
+    b.add(sign);
+    signs.push(sign);
   }
   b.position.set(0, 3.9, 10 - i * 28);
   scene.add(b);
@@ -831,6 +1158,13 @@ const G = {
   bit: new THREE.OctahedronGeometry(0.28),
 };
 const bitMat = new THREE.MeshStandardMaterial({ color: C.blue, emissive: C.blueDark, emissiveIntensity: 0.6, roughness: 0.3 });
+// Geschosse der Bosse
+G.drone = new RoundedBoxGeometry(0.8, 0.6, 0.8, 2, 0.1);
+G.droneEye = new THREE.SphereGeometry(0.16, 10, 8);
+G.wave = new THREE.BoxGeometry(7.6, 0.5, 0.35);
+M.drone = new THREE.MeshStandardMaterial({ color: 0x2a2f38, roughness: 0.3, metalness: 0.6 });
+M.droneEye = new THREE.MeshBasicMaterial({ color: 0xff3355 });
+M.wave = new THREE.MeshStandardMaterial({ color: 0xff5a36, emissive: 0xff5a36, emissiveIntensity: 0.9 });
 
 function shadowed(obj) {
   obj.traverse((o) => { if (o.isMesh) o.castShadow = true; });
@@ -880,6 +1214,19 @@ function buildObstacle(type) {
     wall.position.y = 0.43;
     spin.add(wall);
     dims = { w: 4.4, d: 0.5, yMin: 0, yMax: 0.85 };
+  } else if (type === 'drone') {
+    const body = new THREE.Mesh(G.drone, M.drone);
+    const eye = new THREE.Mesh(G.droneEye, M.droneEye);
+    eye.position.z = 0.38;
+    spin.add(body, eye);
+    spin.position.y = 1.0;
+    dims = { w: 1.0, d: 0.8, yMin: 0.4, yMax: 1.6 };
+  } else if (type === 'wave') {
+    // Druckwelle über alle Spuren – nur Springen hilft
+    const wall = new THREE.Mesh(G.wave, M.wave);
+    wall.position.y = 0.25;
+    spin.add(wall);
+    dims = { w: 7.6, d: 0.5, yMin: 0, yMax: 0.55 };
   }
   return { mesh: shadowed(g), spin, ...dims };
 }
@@ -1000,10 +1347,21 @@ function updateTheme(dt) {
   edgeMat.emissiveIntensity = themeNow.edge;
   for (const m of glowMats) m.emissiveIntensity = themeNow.glow;
   signPanelMat.emissiveIntensity = 0.15 + themeNow.glow * 0.25;
+  signLogoMat.color.setScalar(1 - themeNow.glow * 0.7); // nachts nicht überstrahlen
   rainMat.opacity = 0.35 + themeNow.glow;
+  // Bosskampf: Umgebung glüht bedrohlich rot
+  bossMix += ((boss || bossPending ? 1 : 0) - bossMix) * Math.min(1, dt * 1.2);
+  if (bossMix > 0.01) {
+    tmpC.setHex(0x8a1022);
+    scene.background.lerp(tmpC, bossMix * 0.6);
+    scene.fog.color.lerp(tmpC, bossMix * 0.6);
+    floor.material.color.lerp(tmpC.setHex(0xffb3bd), bossMix * 0.6);
+    laneLineMat.color.lerp(tmpC.setHex(0xff4d6a), bossMix * 0.7);
+  }
+  for (const s of signs) s.visible = bossMix < 0.3;
   if (bloom) {
-    bloom.strength = themeNow.bloom;
-    bloom.enabled = themeNow.bloom > 0.02; // tagsüber kein Glow, spart auch Leistung
+    bloom.strength = themeNow.bloom + bossMix * 0.35;
+    bloom.enabled = bloom.strength > 0.02; // tagsüber kein Glow, spart auch Leistung
   }
 }
 
@@ -1017,7 +1375,7 @@ function fireBolt() {
   m.position.set(player.x, player.y + HOVER + 0.6, -0.9);
   scene.add(m);
   bolts.push({ mesh: m });
-  tone(1400, 0.08, 'sawtooth', 0.025, -900);
+  sfx.laser(player.x / 3);
 }
 
 // Scan-Welle: läuft von der Spielfigur nach vorne und zerstört alles, was sie erreicht
@@ -1057,6 +1415,8 @@ function clearObjects() {
 
 function resetGame() {
   clearObjects();
+  removeBoss();
+  bossCount = 0;
   speed = SPEED_START; dist = 0; score = 0; lives = MAX_LIVES; elapsed = 0;
   rowCursor = 45; nextGateAt = FIRST_GATE;
   gatePending = false; gatePhase = null;
@@ -1073,7 +1433,9 @@ function resetGame() {
 function newGame() {
   resetGame();
   state = 'playing';
+  music.setLevel(1);
   music.setMode('run');
+  sfx.start();
   $('hud').classList.remove('hidden');
   show(null);
   hudCache = {};
@@ -1085,7 +1447,7 @@ function addObstacle(type, lane, z = SPAWN_Z) {
   o.type = type;
   o.t = 0;
   o.phase = Math.random() * Math.PI * 2;
-  o.x = type === 'spam' ? (LANES[lane] + LANES[lane + 1]) / 2 : LANES[lane];
+  o.x = type === 'spam' ? (LANES[lane] + LANES[lane + 1]) / 2 : type === 'wave' ? 0 : LANES[lane];
   o.baseX = o.x;
   o.lane = lane;
   o.hp = type === 'ransom' ? 3 : 1;
@@ -1105,9 +1467,9 @@ function destroyObstacle(o, color) {
   const z = o.mesh.position.z;
   burst(tmpV.set(o.x, 0.8, z), color ?? ENEMY_COLOR[o.type], 20, 7);
   shockwave(o.x, z, color ?? ENEMY_COLOR[o.type], 3.2, 0.45);
-  sfx.smash();
+  sfx.smash(o.x / 3);
 }
-const ENEMY_COLOR = { virus: C.red, bug: C.green, ransom: C.purple, phishing: C.orange, spam: C.grey };
+const ENEMY_COLOR = { virus: C.red, bug: C.green, ransom: C.purple, phishing: C.orange, spam: C.grey, drone: 0xff3355, wave: 0xff5a36 };
 
 function addBits(lane, z = SPAWN_Z, count = 5, arc = false) {
   for (let i = 0; i < count; i++) {
@@ -1205,6 +1567,7 @@ function spawnGate() {
   gate.mesh.position.z = -75;
   scene.add(gate.mesh);
   gatesAsked++;
+  music.riser(1.8);
   const box = $('gateOpts');
   box.innerHTML = '';
   const where = ['links', 'Mitte', 'rechts'];
@@ -1232,6 +1595,7 @@ function startChoose() {
   state = 'gate';
   gatePhase = 'choose';
   music.setMode('gate');
+  music.downlifter();
   $('gateQ').textContent = currentQ.q;
   $('gateHint').classList.remove('hidden');
   $('gateResult').classList.add('hidden');
@@ -1304,6 +1668,8 @@ function leaveGate() {
 function levelUp() {
   level++;
   levelT = 0;
+  // in jeder geraden Stufe wartet etwa auf halber Strecke ein Boss
+  bossAt = level % 2 === 0 ? dist + GATE_EVERY * 0.45 : Infinity;
   themeTarget = Math.min(level - 1, THEMES.length - 1);
   const el = $('levelBanner');
   $('levelNum').textContent = `Stufe ${level}`;
@@ -1311,9 +1677,8 @@ function levelUp() {
   el.classList.remove('hidden', 'go');
   void el.offsetWidth;
   el.classList.add('go');
-  tone(392, 0.12, 'triangle', 0.07);
-  tone(523, 0.12, 'triangle', 0.07, 0, 0.12);
-  tone(784, 0.25, 'triangle', 0.08, 0, 0.24);
+  music.setLevel(level);
+  sfx.levelUp();
 }
 
 // ---------- Treffer & Power-ups ----------
@@ -1333,7 +1698,8 @@ function damage() {
 
 function startDying() {
   state = 'dying';
-  music.setMode('menu');
+  music.tapeStop();
+  sfx.powerDown();
   dyingT = 1.6;
   player.vy = 9;
   shake = 0.45;
@@ -1351,13 +1717,551 @@ function applyPower(o) {
   if (o.type === 'scan') {
     scanWave = { z: 0, life: 0.7 };
     scanMesh.visible = true;
-    tone(220, 0.6, 'sawtooth', 0.06, 900);
+    sfx.scan();
   }
   toast(def.msg, def.color);
   const col = parseInt(def.color.slice(1), 16);
   burst(o.mesh.position, col, 18, 5);
   shockwave(player.x, 0, col, 4, 0.5);
   sfx.power();
+}
+
+// ---------- Bosse ----------
+// In der Mitte jeder geraden Stufe erscheint ein Boss. Während des Kampfs feuert der
+// Chip automatisch – man muss sich in die Spur des Bosses stellen und dabei seinen
+// angekündigten Angriffen (rote Streifen am Boden) ausweichen. Bei 66 % und 33 %
+// Energie wechselt der Boss in die nächste, aggressivere Phase.
+const BOSSES = [
+  { key: 'worm', name: 'Der Wurm', tag: 'Kriecht durch jedes ungepatchte System', hp: 40, color: 0xe5484d, speed: 1.2, shots: ['virus', 'bug'], attacks: ['spit', 'spit', 'volley'] },
+  { key: 'phisher', name: 'Phish-Lord', tag: 'Hat den perfekten Köder für dich', hp: 55, color: 0xf08a24, speed: 1.4, shots: ['phishing', 'spam'], attacks: ['hook', 'mails', 'volley'] },
+  { key: 'botnet', name: 'Botnetz-Kern', tag: 'Tausend Drohnen, ein Wille', hp: 60, color: 0xff3355, speed: 1.0, shots: ['drone'], attacks: ['dive', 'dive', 'beam'], shield: true },
+  { key: 'ransom', name: 'Ransom-Koloss', tag: 'Zahle – oder verliere alles', hp: 80, color: 0x7c5cd6, speed: 0.8, shots: ['ransom', 'virus'], attacks: ['slam', 'locks', 'volley'] },
+  { key: 'zeroday', name: 'Zero-Day', tag: 'Die Lücke, die niemand kennt', hp: 100, color: 0xff2244, speed: 1.6, shots: ['virus', 'drone', 'ransom'], attacks: ['beam2', 'sweep', 'slam', 'volley'] },
+];
+const BOSS_Z = -25;
+const BOSS_SCALE = 1.5;
+const ROMAN = ['', ' II', ' III', ' IV', ' V'];
+let boss = null;
+let bossPending = false;
+let bossAt = Infinity;
+let bossCount = 0;
+let bossMix = 0; // 0..1 – färbt die Umgebung während des Kampfs rot
+
+function bossMat(color, emissive = 0.25, extra = {}) {
+  const m = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: emissive, roughness: 0.4, ...extra });
+  m.userData.base = emissive;
+  return m;
+}
+
+function buildBoss(key) {
+  const group = new THREE.Group();
+  const glow = []; // Materialien, die bei Treffern aufblitzen
+  const reg = (m) => { glow.push(m); return m; };
+  let hitW = 2;
+  let anim = () => {};
+
+  if (key === 'worm') {
+    const head = new THREE.Group();
+    const skull = new THREE.Mesh(virusGeo, reg(bossMat(C.red, 0.3)));
+    skull.scale.setScalar(2.3);
+    const eyes = new THREE.Group();
+    eyes.add(new THREE.Mesh(eyeGeo, M.eye), new THREE.Mesh(pupilGeo, M.pupil));
+    eyes.scale.setScalar(2.3);
+    head.add(skull, eyes);
+    group.add(head);
+    const segMat = reg(bossMat(0xc23238, 0.25));
+    const ringMat = bossMat(0x5a1418, 0.1);
+    const segs = [];
+    for (let i = 0; i < 9; i++) {
+      const s = new THREE.Group();
+      const r = 1.05 - i * 0.07;
+      s.add(new THREE.Mesh(new THREE.SphereGeometry(r, 18, 12), segMat));
+      s.add(new THREE.Mesh(new THREE.TorusGeometry(r * 0.95, 0.09, 6, 20), ringMat));
+      group.add(s);
+      segs.push(s);
+    }
+    hitW = 1.9;
+    anim = (t) => {
+      head.position.set(0, 2.2 + Math.sin(t * 3) * 0.3, 0);
+      skull.rotation.set(t * 0.8, t * 1.3, 0);
+      segs.forEach((s, i) => s.position.set(Math.sin(t * 2.2 - i * 0.7) * 0.25 * (i + 1), 1.7 + Math.sin(t * 3 - i * 0.8) * 0.4, -1.6 - i * 1.25));
+    };
+  } else if (key === 'phisher') {
+    const bodyMat = reg(bossMat(C.orange, 0.2));
+    const body = new THREE.Mesh(new RoundedBoxGeometry(4.4, 3, 0.7, 3, 0.15), [bodyMat, bodyMat, bodyMat, bodyMat, phishFace, bodyMat]);
+    body.position.y = 2.3;
+    const jaw = new THREE.Group();
+    jaw.position.set(0, 3.8, 0.35);
+    const flap = new THREE.Mesh(new THREE.BoxGeometry(4.3, 0.12, 2), bodyMat);
+    flap.position.z = 1;
+    jaw.add(flap);
+    for (const s of [-1, 1]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.45, 16, 12), M.eye);
+      eye.position.set(s * 1.1, 4.2, 0.1);
+      const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.2, 12, 8), M.pupil);
+      pupil.position.set(s * 1.1, 4.15, 0.48);
+      group.add(eye, pupil);
+    }
+    const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.1, 4.2, 8), M.line);
+    rod.position.set(2.6, 5.4, 0.6);
+    rod.rotation.z = -0.6;
+    const line = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 2.6, 6), M.line);
+    const lure = new THREE.Mesh(new THREE.SphereGeometry(0.35, 16, 12), new THREE.MeshBasicMaterial({ color: 0xffd84d }));
+    const hook = new THREE.Mesh(new THREE.TorusGeometry(0.45, 0.08, 8, 20, Math.PI * 1.3), M.metal);
+    group.add(body, jaw, rod, line, lure, hook);
+    hitW = 2.4;
+    anim = (t) => {
+      jaw.rotation.x = -0.15 - (Math.sin(t * 4) + 1) * 0.22;
+      body.rotation.z = Math.sin(t * 1.5) * 0.06;
+      const ly = 4.1 + Math.sin(t * 3) * 0.3;
+      lure.position.set(3.85, ly, 1.3);
+      hook.position.set(3.75, ly - 0.55, 1.3);
+      hook.rotation.z = Math.PI + Math.sin(t * 2) * 0.2;
+      line.position.set(3.85, ly + 1.4, 1.3);
+    };
+  } else if (key === 'botnet') {
+    const coreMat = reg(new THREE.MeshStandardMaterial({ color: 0x1d222b, emissive: 0xff3355, emissiveIntensity: 0.15, roughness: 0.3, metalness: 0.7 }));
+    coreMat.userData.base = 0.15;
+    const core = new THREE.Mesh(new THREE.IcosahedronGeometry(1.4, 1), coreMat);
+    const wire = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(1.46, 1)), new THREE.LineBasicMaterial({ color: 0xff3355 }));
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.45, 16, 12), new THREE.MeshBasicMaterial({ color: 0xff2244 }));
+    eye.position.z = 1.25;
+    const coreG = new THREE.Group();
+    coreG.add(core, wire, eye);
+    coreG.position.y = 2.6;
+    const drones = [];
+    for (let i = 0; i < 6; i++) {
+      const d = new THREE.Group();
+      d.add(new THREE.Mesh(G.drone, M.drone));
+      const de = new THREE.Mesh(G.droneEye, M.droneEye);
+      de.position.z = 0.38;
+      d.add(de);
+      group.add(d);
+      drones.push(d);
+    }
+    const shield = new THREE.Mesh(
+      new THREE.SphereGeometry(2.3, 32, 20),
+      new THREE.MeshBasicMaterial({ color: 0xff3355, transparent: true, opacity: 0.18, depthWrite: false }),
+    );
+    shield.position.y = 2.6;
+    group.add(coreG, shield);
+    hitW = 1.9;
+    anim = (t, b) => {
+      core.rotation.set(t * 0.5, t * 0.7, 0);
+      wire.rotation.copy(core.rotation);
+      drones.forEach((d, i) => {
+        const a = t * 1.6 + (i / 6) * Math.PI * 2;
+        d.position.set(Math.cos(a) * 3, 2.6 + Math.sin(a * 2) * 0.6, Math.sin(a) * 1.5);
+        d.rotation.y = -a;
+      });
+      shield.visible = b.shieldUp;
+      shield.material.opacity = 0.14 + Math.sin(t * 8) * 0.05;
+    };
+  } else if (key === 'ransom') {
+    const bodyMat = reg(bossMat(C.purple, 0.2));
+    const noteTex = canvasTex(512, 370, (g, w, h) => {
+      g.fillStyle = '#2b2140';
+      g.fillRect(0, 0, w, h);
+      g.fillStyle = '#ff4d6a';
+      g.font = `bold 40px ${FONT}`;
+      g.textAlign = 'center';
+      g.fillText('IHRE DATEN SIND', w / 2, 80);
+      g.fillText('VERSCHLÜSSELT', w / 2, 128);
+      g.fillStyle = '#fff';
+      g.font = `bold 76px ${FONT}`;
+      g.fillText('ZAHLE 1 BTC', w / 2, 230);
+      g.fillStyle = '#ff4d6a';
+      g.font = `bold 54px ${FONT}`;
+      g.fillText('23:59:59', w / 2, 315);
+    });
+    const face = new THREE.MeshStandardMaterial({ map: noteTex, emissive: 0xffffff, emissiveMap: noteTex, emissiveIntensity: 0.35 });
+    const body = new THREE.Mesh(new RoundedBoxGeometry(5, 3.6, 1.6, 3, 0.2), [bodyMat, bodyMat, bodyMat, bodyMat, face, bodyMat]);
+    body.position.y = 2.3;
+    const shackle = new THREE.Mesh(new THREE.TorusGeometry(1.4, 0.38, 12, 28, Math.PI), M.metal);
+    shackle.position.y = 4.1;
+    const arms = [-1, 1].map((s) => {
+      const pivot = new THREE.Group();
+      pivot.position.set(s * 3.1, 3.6, 0);
+      const upper = new THREE.Mesh(new THREE.BoxGeometry(0.9, 2.4, 0.9), bodyMat);
+      upper.position.y = -1.2;
+      const fist = new THREE.Mesh(new RoundedBoxGeometry(1.3, 1.1, 1.3, 2, 0.15), M.metal);
+      fist.position.y = -2.7;
+      pivot.add(upper, fist);
+      group.add(pivot);
+      return pivot;
+    });
+    group.add(body, shackle);
+    hitW = 2.8;
+    anim = (t, b) => {
+      const raise = b.slamT > 0 ? -2.4 * (b.slamT / 0.7) : Math.sin(t * 2) * 0.25;
+      arms[0].rotation.x = raise;
+      arms[1].rotation.x = b.slamT > 0 ? raise : -Math.sin(t * 2) * 0.25;
+      body.rotation.y = Math.sin(t) * 0.12;
+      shackle.rotation.y = body.rotation.y;
+    };
+  } else {
+    const darkMat = reg(new THREE.MeshStandardMaterial({ color: 0x0b0f17, emissive: 0xff2244, emissiveIntensity: 0.1, roughness: 0.2, metalness: 0.9 }));
+    darkMat.userData.base = 0.1;
+    const body = new THREE.Mesh(new THREE.OctahedronGeometry(2, 0), darkMat);
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.OctahedronGeometry(2.05, 0)), new THREE.LineBasicMaterial({ color: 0xff2244 }));
+    const iris = new THREE.Mesh(new THREE.TorusGeometry(0.6, 0.1, 10, 32), new THREE.MeshBasicMaterial({ color: 0xffd0d6 }));
+    const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.42, 16, 12), new THREE.MeshBasicMaterial({ color: 0xff2244 }));
+    iris.position.z = 2.1;
+    pupil.position.z = 2.05;
+    const core = new THREE.Group();
+    core.add(body, edges, iris, pupil);
+    core.position.y = 2.8;
+    const ringMat = new THREE.MeshBasicMaterial({ color: 0xff2244 });
+    const rings = [2.8, 3.3, 3.8].map((r) => {
+      const m = new THREE.Mesh(new THREE.TorusGeometry(r, 0.05, 6, 64), ringMat);
+      m.position.y = 2.8;
+      group.add(m);
+      return m;
+    });
+    group.add(core);
+    hitW = 2.0;
+    anim = (t, b) => {
+      body.rotation.y = t * 0.6;
+      edges.rotation.y = body.rotation.y;
+      rings[0].rotation.set(t * 0.9, t * 0.4, 0);
+      rings[1].rotation.set(t * -0.6, 0, t * 0.8);
+      rings[2].rotation.set(0, t * 0.7, t * -0.5);
+      // Glitch: kurzes Zucken und Flackern
+      const glitch = Math.random() < (b.phase >= 2 ? 0.08 : 0.04);
+      core.position.x = glitch ? rand(-0.4, 0.4) : 0;
+      core.scale.setScalar(glitch ? rand(0.85, 1.15) : 1);
+    };
+  }
+  group.scale.setScalar(BOSS_SCALE);
+  return { group: shadowed(group), glow, hitW: hitW * 1.15, anim };
+}
+
+function showBanner(title, sub, variant, kicker = '') {
+  const el = $('bossBanner');
+  el.className = `boss-banner ${variant}`;
+  $('bossKicker').textContent = kicker;
+  $('bossTitle').textContent = title;
+  $('bossTag').textContent = sub;
+  void el.offsetWidth;
+  el.classList.add('go');
+}
+
+function warnBoss() {
+  bossPending = true;
+  bossAt = Infinity;
+  rowCursor = Infinity;
+  for (const o of objects) if (o.kind === 'obs' && o.mesh.position.z < -70) o.dead = true;
+  showBanner('Boss nähert sich', 'Mach dich bereit!', 'warn', '⚠ Warnung');
+  for (let k = 0; k < 3; k++) setTimeout(() => { if (bossPending) sfx.warn(); }, k * 520);
+  music.riser(2.6);
+}
+
+function spawnBoss() {
+  bossPending = false;
+  const def = BOSSES[bossCount % BOSSES.length];
+  const tier = Math.floor(bossCount / BOSSES.length);
+  bossCount++;
+  const model = buildBoss(def.key);
+  const hp = Math.round(def.hp * (1 + tier * 0.6));
+  boss = {
+    def, tier, ...model,
+    name: def.name + (ROMAN[tier] ?? ` ${tier + 1}`),
+    hp, maxHp: hp, x: 0, z: -150, t: 0, wob: 0, phase: 1,
+    attackT: 2.2, entering: true, flash: 0, slamT: 0,
+    shieldUp: !!def.shield, shieldT: 3.5, dying: 0, boomT: 0,
+    timers: [], tele: [], beams: [],
+  };
+  boss.group.position.set(0, 0, boss.z);
+  scene.add(boss.group);
+  $('bossName').textContent = boss.name;
+  $('bossBar').classList.remove('hidden');
+  showBanner(boss.name, def.tag, 'intro', 'Boss');
+  music.stinger();
+  music.setMode('boss');
+  sfx.roar();
+  shake = 0.5;
+}
+
+function later(b, t, fn) {
+  b.timers.push({ t, fn });
+}
+
+// Warnstreifen am Boden; nach Ablauf wird der Angriff ausgelöst
+const teleGeo = new THREE.PlaneGeometry(2.2, 1);
+const beamGeo = new THREE.BoxGeometry(1.1, 2.4, 1);
+function telegraph(lane, dur, color, then) {
+  const b = boss;
+  const len = Math.abs(BOSS_Z) + 4;
+  const m = new THREE.Mesh(teleGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.3, depthWrite: false }));
+  m.rotation.x = -Math.PI / 2;
+  m.scale.set(1, len, 1);
+  m.position.set(LANES[lane], 0.04, BOSS_Z / 2 + 2);
+  scene.add(m);
+  const tg = { mesh: m, t: 0 };
+  b.tele.push(tg);
+  later(b, dur, () => {
+    scene.remove(m);
+    b.tele = b.tele.filter((x) => x !== tg);
+    then();
+  });
+}
+
+function bossShot(b, lane, type, moving = false) {
+  telegraph(lane, 0.65, b.def.color, () => {
+    const o = addObstacle(type, lane, BOSS_Z + 2);
+    o.static = !moving;
+    o.fromBoss = true;
+    burst(tmpV.set(LANES[lane], 2, BOSS_Z + 2), b.def.color, 10, 5);
+    osc('sawtooth', 320, 110, 0.18, 0.05, { pan: LANES[lane] / 3 });
+  });
+}
+
+function beamAttack(b, lanes, warn, color = b.def.color) {
+  sfx.charge(LANES[lanes[0]] / 3);
+  for (const lane of lanes) {
+    telegraph(lane, warn, color, () => {
+      const m = new THREE.Mesh(beamGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 }));
+      m.scale.set(1, 1, Math.abs(BOSS_Z) + 4);
+      m.position.set(LANES[lane], 1.2, BOSS_Z / 2 + 2);
+      scene.add(m);
+      b.beams.push({ mesh: m, lane, t: 0.55 });
+      sfx.beam(LANES[lane] / 3);
+      shake = Math.max(shake, 0.25);
+    });
+  }
+}
+
+function slamAttack(b) {
+  b.slamT = 0.7;
+  for (const lane of [0, 1, 2]) {
+    telegraph(lane, 0.7, 0xff5a36, () => {
+      if (lane !== 1) return;
+      const o = addObstacle('wave', 1, BOSS_Z + 3);
+      o.fromBoss = true;
+      sfx.slam();
+      shake = 0.5;
+      shockwave(b.x, BOSS_Z + 2, b.def.color, 7, 0.6);
+    });
+  }
+}
+
+function bossAttack(b, kind) {
+  const pl = player.lane;
+  const others = [0, 1, 2].filter((l) => l !== pl);
+  const free = pick([0, 1, 2]);
+  switch (kind) {
+    case 'spit':
+      bossShot(b, pl, pick(b.def.shots));
+      if (b.phase >= 2) later(b, 0.45, () => bossShot(b, pick(others), pick(b.def.shots)));
+      break;
+    case 'volley':
+      for (const l of [0, 1, 2]) if (l !== free) bossShot(b, l, pick(b.def.shots));
+      break;
+    case 'mails':
+      bossShot(b, pl, 'phishing', true);
+      later(b, 0.6, () => bossShot(b, pick([0, 1, 2]), 'phishing', true));
+      break;
+    case 'dive':
+      bossShot(b, pl, 'drone');
+      if (b.phase >= 2) later(b, 0.5, () => bossShot(b, pick(others), 'drone'));
+      break;
+    case 'locks':
+      for (const l of [0, 1, 2]) if (l !== free) bossShot(b, l, 'ransom');
+      break;
+    case 'hook':
+      beamAttack(b, [pl], 0.9, 0xffb020);
+      break;
+    case 'beam':
+      beamAttack(b, b.phase >= 3 ? [pl, pick(others)] : [pl], 1.0);
+      break;
+    case 'beam2':
+      beamAttack(b, [0, 1, 2].filter((l) => l !== free), 1.0);
+      break;
+    case 'sweep': {
+      const order = shuffle([0, 1, 2]);
+      beamAttack(b, [order[0], order[1]], 0.9);
+      later(b, 1.4, () => beamAttack(b, [order[2], order[0]], 0.8));
+      break;
+    }
+    case 'slam':
+      slamAttack(b);
+      break;
+  }
+}
+
+function hitBoss(pos) {
+  const b = boss;
+  if (b.shieldUp) {
+    burst(pos, 0xff3355, 4, 3);
+    sfx.shieldBlock(pos.x / 3);
+    return;
+  }
+  b.hp--;
+  b.flash = 0.07;
+  score += 10 * scoreMult();
+  burst(pos, 0xffffff, 4, 4);
+  sfx.bossHit(pos.x / 3);
+  const ratio = b.hp / b.maxHp;
+  const phase = ratio <= 0.33 ? 3 : ratio <= 0.66 ? 2 : 1;
+  if (phase > b.phase) {
+    b.phase = phase;
+    sfx.roar();
+    shake = 0.45;
+    flashScreen('rgba(229,72,77,0.35)');
+    toast(phase === 3 ? 'Der Boss rastet aus!' : 'Phase 2 – er wird schneller!', '#e5484d');
+    // kleine Hilfe: ein Power-up fällt heraus
+    addPower(pick([0, 1, 2]), BOSS_Z + 6);
+  }
+  if (b.hp <= 0) defeatBoss();
+}
+
+function clearBossAttacks(b) {
+  for (const tg of b.tele) scene.remove(tg.mesh);
+  for (const bm of b.beams) scene.remove(bm.mesh);
+  b.tele = [];
+  b.beams = [];
+  b.timers = [];
+}
+
+function defeatBoss() {
+  const b = boss;
+  b.dying = 2.2;
+  clearBossAttacks(b);
+  for (const o of objects) if (o.fromBoss && !o.dead) destroyObstacle(o);
+  sfx.bossDown();
+  music.setMode('gate');
+}
+
+function finishBoss() {
+  const b = boss;
+  burst(tmpV.set(b.x, 2.5, b.z), 0xffffff, 40, 12);
+  burst(tmpV.set(b.x, 2.5, b.z), b.def.color, 40, 10);
+  shockwave(b.x, b.z, 0xffffff, 12, 0.9);
+  flashScreen('rgba(255,255,255,0.75)');
+  scene.remove(b.group);
+  const bonus = Math.round(2000 * (1 + b.tier) * scoreMult());
+  score += bonus;
+  lives = Math.min(MAX_LIVES, lives + 1);
+  showBanner('Boss besiegt!', `${b.name} · +${fmt(bonus)} Punkte · +1 Netzwerk`, 'win', '★ Sieg');
+  addPower(0, -45);
+  addPower(2, -58);
+  $('bossBar').classList.add('hidden');
+  boss = null;
+  rowCursor = 45;
+  nextGateAt = Math.max(nextGateAt, dist + GATE_EVERY * 0.5);
+  music.impact();
+  music.setMode('run');
+}
+
+function removeBoss() {
+  if (boss) {
+    clearBossAttacks(boss);
+    scene.remove(boss.group);
+  }
+  boss = null;
+  bossPending = false;
+  bossAt = Infinity;
+  $('bossBar').classList.add('hidden');
+}
+
+function updateBoss(dt) {
+  const b = boss;
+  b.t += dt;
+  b.slamT = Math.max(0, b.slamT - dt);
+
+  // Einflug aus der Ferne
+  if (b.entering) {
+    b.z += (BOSS_Z - b.z) * Math.min(1, dt * 1.6);
+    if (Math.abs(b.z - BOSS_Z) < 0.5) {
+      b.z = BOSS_Z;
+      b.entering = false;
+    }
+  }
+  if (!b.dying) {
+    const sp = b.def.speed * (1 + (b.phase - 1) * 0.35);
+    b.wob += dt * sp;
+    let tx = Math.sin(b.wob * 0.55) * 2.6 + Math.sin(b.wob * 1.7) * 0.4;
+    // Zero-Day teleportiert sich ab Phase 2 gelegentlich
+    if (b.def.key === 'zeroday' && b.phase >= 2) {
+      b.teleT = (b.teleT ?? 2) - dt;
+      if (b.teleT <= 0) {
+        b.teleT = rand(1.5, 2.8);
+        b.teleX = pick(LANES);
+        burst(tmpV.set(b.x, 2.8, b.z), 0xff2244, 16, 6);
+        osc('square', 2000, 200, 0.15, 0.04);
+      }
+      if (b.teleX !== undefined) tx = b.teleX;
+      b.x = tx;
+    } else {
+      b.x += (tx - b.x) * Math.min(1, dt * 3);
+    }
+  }
+  b.group.position.set(b.x, Math.sin(b.t * 1.3) * 0.2, b.z);
+  b.anim(b.t, b);
+
+  // Treffer-Blitz und Wut-Pulsieren in Phase 3
+  b.flash = Math.max(0, b.flash - dt);
+  const rage = b.phase === 3 ? (Math.sin(b.t * 10) + 1) * 0.25 : 0;
+  for (const m of b.glow) m.emissiveIntensity = m.userData.base + rage + (b.flash > 0 ? 1.6 : 0);
+
+  for (const tm of b.timers) {
+    tm.t -= dt;
+    if (tm.t <= 0 && !tm.done) {
+      tm.done = true;
+      tm.fn();
+    }
+  }
+  b.timers = b.timers.filter((tm) => !tm.done);
+  for (const tg of b.tele) {
+    tg.t += dt;
+    tg.mesh.material.opacity = 0.15 + (Math.sin(tg.t * 18) + 1) * 0.15;
+  }
+  for (const bm of b.beams) {
+    bm.t -= dt;
+    bm.mesh.scale.x = 0.6 + Math.random() * 0.5;
+    if (!bm.hit && state === 'playing' && Math.abs(player.x - LANES[bm.lane]) < 1.0 && player.invuln <= 0 && powers.firewall <= 0) {
+      bm.hit = true;
+      damage();
+    }
+    if (bm.t <= 0) {
+      scene.remove(bm.mesh);
+      bm.dead = true;
+    }
+  }
+  b.beams = b.beams.filter((bm) => !bm.dead);
+
+  if (b.dying) {
+    b.dying -= dt;
+    b.boomT -= dt;
+    if (b.boomT <= 0) {
+      b.boomT = 0.14;
+      const p = tmpV.set(b.x + rand(-2, 2), rand(1, 4.5), b.z + rand(-1, 1));
+      burst(p, pick([b.def.color, 0xffffff, 0xffb020]), 14, 8);
+      shockwave(p.x, b.z, b.def.color, 4, 0.5);
+      shake = Math.max(shake, 0.3);
+    }
+    b.group.rotation.z = Math.sin(b.t * 30) * 0.08;
+    b.group.scale.setScalar(BOSS_SCALE * (1 + (2.2 - b.dying) * 0.06));
+    if (b.dying <= 0) finishBoss();
+    return;
+  }
+  if (b.entering || state !== 'playing') return;
+
+  // Botnetz: Schild öffnet und schliesst sich im Wechsel
+  if (b.def.shield) {
+    b.shieldT -= dt;
+    if (b.shieldT <= 0) {
+      b.shieldUp = !b.shieldUp;
+      b.shieldT = b.shieldUp ? 3.2 : b.phase === 3 ? 2 : 2.6;
+      if (!b.shieldUp) toast('Schild offen – jetzt feuern!', '#e5484d');
+    }
+  }
+
+  b.attackT -= dt;
+  if (b.attackT <= 0) {
+    bossAttack(b, pick(b.def.attacks));
+    b.attackT = rand(1.7, 2.5) / (1 + (b.phase - 1) * 0.35) / (1 + b.tier * 0.15);
+  }
 }
 
 // ---------- Update ----------
@@ -1370,7 +2274,8 @@ function update(dt) {
   if (playing) {
     elapsed += dt;
     levelT += dt;
-    const target = levelSpeed(level, levelT);
+    // im Bosskampf etwas gemächlicher, damit man Angriffe lesen kann
+    const target = boss || bossPending ? Math.min(22, levelSpeed(level, levelT)) : levelSpeed(level, levelT);
     speed += (target - speed) * Math.min(1, dt * 1.5);
   } else if (atGate) {
     // sanft abbremsen, sodass das Tor bei GATE_STOP_Z stehen bleibt
@@ -1443,16 +2348,21 @@ function update(dt) {
       rowCursor = extra + rand(0.85, 1.25) * Math.max(10, speed * 0.95 * tight);
     }
 
-    // Antivirus-Laser
-    if (powers.antivirus > 0) {
+    // Antivirus-Laser – im Bosskampf feuert der Chip immer
+    const bossFight = boss && !boss.entering && !boss.dying;
+    if (powers.antivirus > 0 || bossFight) {
       boltT -= dt;
       if (boltT <= 0) {
         fireBolt();
-        boltT = 0.2;
+        boltT = bossFight ? 0.17 : 0.2;
       }
     }
+
+    // Boss: ankündigen, sobald die Strecke frei ist auftauchen lassen
+    if (!boss && !bossPending && !gate && !gatePending && dist >= bossAt) warnBoss();
+    if (bossPending && !objects.some((o) => !o.dead && o.kind === 'obs' && o.mesh.position.z < 1.5)) spawnBoss();
     // Vor dem Gate: keine neuen Hindernisse, weit entfernte verschwinden im Nebel
-    if (!gate && !gatePending && dist >= nextGateAt) {
+    if (!gate && !gatePending && !boss && !bossPending && dist >= nextGateAt) {
       gatePending = true;
       rowCursor = Infinity;
       for (const o of objects) if (o.kind === 'obs' && o.mesh.position.z < -70) o.dead = true;
@@ -1481,7 +2391,7 @@ function update(dt) {
     if (b.mesh.position.z < -110) b.dead = true;
     for (const o of objects) {
       if (b.dead) break;
-      if (o.kind !== 'obs' || o.dead) continue;
+      if (o.kind !== 'obs' || o.dead || o.type === 'wave') continue;
       if (Math.abs(o.x - b.mesh.position.x) < o.w / 2 + 0.15 && Math.abs(o.mesh.position.z - b.mesh.position.z) < o.d / 2 + 0.8) {
         b.dead = true;
         o.hp--;
@@ -1489,7 +2399,13 @@ function update(dt) {
         else burst(tmpV.set(o.x, 1, o.mesh.position.z), 0x5fffe0, 6, 3);
       }
     }
+    if (!b.dead && boss && !boss.entering && !boss.dying &&
+        Math.abs(b.mesh.position.x - boss.x) < boss.hitW && b.mesh.position.z < boss.z + 1.5) {
+      b.dead = true;
+      hitBoss(b.mesh.position);
+    }
   }
+  if (boss) updateBoss(dt);
   if (bolts.some((b) => b.dead)) {
     bolts = bolts.filter((b) => {
       if (b.dead) scene.remove(b.mesh);
@@ -1507,6 +2423,11 @@ function update(dt) {
     scanMesh.material.opacity = 1 - p;
     for (const o of objects) {
       if (o.kind === 'obs' && !o.dead && o.mesh.position.z > scanWave.z) destroyObstacle(o, 0x7c5cd6);
+    }
+    // ein Scan trifft auch den Boss kräftig
+    if (boss && !scanWave.bossHit && !boss.entering && !boss.dying && scanWave.z < boss.z) {
+      scanWave.bossHit = true;
+      for (let k = 0; k < 5 && boss && !boss.dying; k++) hitBoss(tmpV.set(boss.x, 2.5, boss.z));
     }
     if (scanWave.life <= 0) {
       scanWave = null;
@@ -1537,12 +2458,18 @@ function update(dt) {
         o.spin.rotation.y = Math.cos(o.t * 3 + o.phase) * 0.35;
       }
       if (o.type === 'phishing') {
-        if (z > -60) o.x = clamp(o.baseX + Math.sin(o.t * (1.2 + level * 0.15) + o.phase) * 2.6, -2.4, 2.4);
+        if (z > -60 && !o.static) o.x = clamp(o.baseX + Math.sin(o.t * (1.2 + level * 0.15) + o.phase) * 2.6, -2.4, 2.4);
         o.spin.position.y = 1.3 + Math.sin(o.t * 3) * 0.12;
         o.spin.rotation.z = Math.sin(o.t * 2.5) * 0.15;
       }
       if (o.type === 'ransom') o.spin.rotation.y = Math.sin(o.t * 1.5) * 0.25;
       o.mesh.position.x = o.x;
+      // Knapp vorbei: räumliches Zischen links oder rechts
+      if (playing && !o.passed && z > 0.6) {
+        o.passed = true;
+        const dx = o.x - px;
+        if (Math.abs(dx) > 0.9 && Math.abs(dx) < 3.2) sfx.whoosh(clamp(dx / 2.4, -1, 1));
+      }
       // Hitbox bewusst etwas kleiner als die Figur – knappe Ausweichmanöver sollen gelingen
       if (playing && Math.abs(z) < o.d / 2 + 0.45 && Math.abs(o.x - px) < o.w / 2 + 0.38 &&
           py < o.yMax && py + PLAYER_SIZE > o.yMin) {
@@ -1654,7 +2581,7 @@ function updatePlayer(dt) {
 function updateCamera(dt) {
   const narrow = camera.aspect < 0.8;
   const tx = player.x * (narrow ? 0.25 : 0.55);
-  const ty = (narrow ? 5.2 : 4.3) + player.y * 0.3;
+  const ty = (narrow ? 5.2 : 4.3) + player.y * 0.3 + bossMix * 0.8;
   const tz = narrow ? 10.5 : 7.8;
   const k = Math.min(1, dt * 6);
   camera.position.x += (tx - camera.position.x) * k;
@@ -1665,7 +2592,7 @@ function updateCamera(dt) {
     camera.position.x += rand(-1, 1) * shake * 0.6;
     camera.position.y += rand(-1, 1) * shake * 0.6;
   }
-  camera.lookAt(player.x * 0.35, 1.1 + player.y * 0.2, -8);
+  camera.lookAt(player.x * 0.35, 1.1 + player.y * 0.2 + bossMix * 0.6, -8 - bossMix * 6);
   // Weitwinkel bei hohem Tempo verstärkt das Geschwindigkeitsgefühl
   const fov = baseFov + clamp((speed - SPEED_START) * 0.3, 0, 12) - (powers.update > 0 && state === 'playing' ? 4 : 0);
   if (Math.abs(camera.fov - fov) > 0.05) {
@@ -1686,6 +2613,10 @@ function updateHud() {
   setText('hudScore', fmt(score));
   setText('hudDist', fmt(dist) + ' MB');
   setText('hudLevel', String(level));
+  if (boss) {
+    $('bossHp').style.width = (Math.max(0, boss.hp) / boss.maxHp) * 100 + '%';
+    setText('bossPhase', boss.dying ? 'Besiegt!' : boss.shieldUp ? 'Schild aktiv' : `Phase ${boss.phase}`);
+  }
   const livesHtml = Array.from({ length: MAX_LIVES }, (_, i) => `<i class="${i < lives ? '' : 'off'}"></i>`).join('');
   if (hudCache.lives !== livesHtml) {
     hudCache.lives = livesHtml;
@@ -1823,7 +2754,7 @@ function move(dir) {
   const lane = clamp(player.lane + dir, 0, 2);
   if (lane !== player.lane) {
     player.lane = lane;
-    sfx.lane();
+    sfx.lane(dir);
     if (choosing) highlightLane();
   }
 }
@@ -1918,6 +2849,11 @@ if (new URLSearchParams(location.search).has('debug')) {
     invincible: () => { powers.firewall = 9999; },
     power: (type) => applyPower({ type, mesh: playerGroup }),
     level: (n) => { while (level < n) levelUp(); },
+    // Boss Nr. n (0–4) sofort auftauchen lassen
+    boss: (n = 0) => { bossCount = n; bossAt = dist; },
+    killBoss: () => boss && !boss.dying && defeatBoss(),
+    look: () => ({ bossMix, bg: scene.background.getHexString(), bloom: bloom && bloom.strength }),
+    bossHp: () => boss && { name: boss.name, hp: boss.hp, phase: boss.phase, x: boss.x, dying: boss.dying > 0 },
     nextGate: () => { nextGateAt = dist; },
     info: () => ({ state, dist: Math.round(dist), lives, lane: player.lane, gate: !!gate, gatesAsked, gatesCorrect }),
   };
@@ -1948,6 +2884,8 @@ function frame() {
     // UPDATE-Power-up: Zeitlupe für die Welt
     const slow = state === 'playing' && powers.update > 0 ? 0.55 : 1;
     update(dt * slow);
+    music.setMuffle(slow < 1);
+    music.setDanger(lives === 1 && (state === 'playing' || state === 'gate'));
     updateCamera(dt);
   }
   updateHud();
