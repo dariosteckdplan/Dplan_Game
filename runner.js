@@ -1471,6 +1471,7 @@ function resetGame() {
   rowCursor = 45; nextGateAt = FIRST_GATE;
   gatePending = false; gatePhase = null;
   gatesAsked = 0; gatesCorrect = 0; shake = 0;
+  gateLog = [];
   level = 1; levelT = 0; themeTarget = 0;
   powers = freshPowers();
   Object.assign(player, { lane: 1, x: 0, y: 0, vy: 0, spin: 0, invuln: 0, tumble: 0 });
@@ -1605,6 +1606,7 @@ function spawnRow() {
 // ---------- Security-Gate Ablauf ----------
 let currentQ = null;
 let gateAnswers = [];
+let gateLog = []; // für die Auswertung am Spielende
 
 // Ablauf: Hindernisse abwarten → Tor taucht auf → Spiel hält an (choose)
 // → Antwort wählen (reveal, Erklärung lesen) → «Weiter» → durchs Tor fahren
@@ -1647,6 +1649,7 @@ function startChoose() {
   music.setMode('gate');
   music.downlifter();
   $('gateQ').textContent = currentQ.q;
+  $('gateCat').textContent = currentQ.cat || '';
   $('gateHint').classList.remove('hidden');
   $('gateResult').classList.add('hidden');
   $('gatePanel').classList.remove('hidden');
@@ -1690,6 +1693,11 @@ function chooseAnswer() {
     sfx.wrong();
   }
   tip.append(strong, currentQ.tip);
+  gateLog.push({
+    q: currentQ, ok,
+    picked: gateAnswers[lane].text,
+    right: gateAnswers.find((a) => a.ok).text,
+  });
   $('gateHint').classList.add('hidden');
   $('gateResult').classList.remove('hidden');
   $('btnGateGo').textContent = lives > 0 ? 'Weiter' : 'Ergebnis ansehen';
@@ -1782,11 +1790,11 @@ function applyPower(o) {
 // angekündigten Angriffen (rote Streifen am Boden) ausweichen. Bei 66 % und 33 %
 // Energie wechselt der Boss in die nächste, aggressivere Phase.
 const BOSSES = [
-  { key: 'worm', name: 'Der Wurm', tag: 'Kriecht durch jedes ungepatchte System', hp: 75, color: 0xe5484d, speed: 1.2, shots: ['virus', 'bug'], attacks: ['spit', 'spit', 'volley'] },
-  { key: 'phisher', name: 'Phish-Lord', tag: 'Hat den perfekten Köder für dich', hp: 100, color: 0xf08a24, speed: 1.4, shots: ['phishing', 'spam'], attacks: ['hook', 'mails', 'volley'] },
-  { key: 'botnet', name: 'Botnetz-Kern', tag: 'Tausend Drohnen, ein Wille', hp: 115, color: 0xff3355, speed: 1.0, shots: ['drone'], attacks: ['dive', 'dive', 'beam'], shield: true },
-  { key: 'ransom', name: 'Ransom-Koloss', tag: 'Zahle – oder verliere alles', hp: 145, color: 0x7c5cd6, speed: 0.8, shots: ['ransom', 'virus'], attacks: ['slam', 'locks', 'volley'] },
-  { key: 'zeroday', name: 'Zero-Day', tag: 'Die Lücke, die niemand kennt', hp: 190, color: 0xff2244, speed: 1.6, shots: ['virus', 'drone', 'ransom'], attacks: ['beam2', 'sweep', 'slam', 'volley'] },
+  { key: 'worm', name: 'Der Wurm', tag: 'Kriecht durch jedes ungepatchte System', hp: 58, color: 0xe5484d, speed: 1.2, shots: ['virus', 'bug'], attacks: ['spit', 'spit', 'volley'] },
+  { key: 'phisher', name: 'Phish-Lord', tag: 'Hat den perfekten Köder für dich', hp: 78, color: 0xf08a24, speed: 1.4, shots: ['phishing', 'spam'], attacks: ['hook', 'mails', 'volley'] },
+  { key: 'botnet', name: 'Botnetz-Kern', tag: 'Tausend Drohnen, ein Wille', hp: 88, color: 0xff3355, speed: 1.0, shots: ['drone'], attacks: ['dive', 'dive', 'beam'], shield: true },
+  { key: 'ransom', name: 'Ransom-Koloss', tag: 'Zahle – oder verliere alles', hp: 112, color: 0x7c5cd6, speed: 0.8, shots: ['ransom', 'virus'], attacks: ['slam', 'locks', 'volley'] },
+  { key: 'zeroday', name: 'Zero-Day', tag: 'Die Lücke, die niemand kennt', hp: 145, color: 0xff2244, speed: 1.6, shots: ['virus', 'drone', 'ransom'], attacks: ['beam2', 'sweep', 'slam', 'volley'] },
 ];
 const BOSS_Z = -25;
 const BOSS_SCALE = 1.5;
@@ -1984,7 +1992,7 @@ function buildBoss(key) {
   }
   group.scale.setScalar(BOSS_SCALE);
   // Trefferzone: etwa eine Spur breit – man muss sich wirklich vor den Boss stellen
-  return { group: shadowed(group), glow, hitW: clamp(hitW * 0.7, 1.2, 1.9), anim };
+  return { group: shadowed(group), glow, hitW: clamp(hitW * 0.92, 1.5, 2.5), anim };
 }
 
 function showBanner(title, sub, variant, kicker = '') {
@@ -2015,11 +2023,11 @@ function spawnBoss() {
   const rank = bossCount;
   bossCount++;
   const model = buildBoss(def.key);
-  const hp = Math.round(def.hp * (1 + tier * 0.75));
+  const hp = Math.round(def.hp * (1 + tier * 0.68));
   boss = {
     def, tier, rank, ...model,
-    warn: Math.max(0.55, 1 - rank * 0.07), // Faktor für die Ankündigungszeit
-    aggro: 1 + rank * 0.12, // Faktor für die Angriffsfrequenz
+    warn: Math.max(0.78, 1 - rank * 0.035), // Faktor für die Ankündigungszeit
+    aggro: 1 + rank * 0.06, // Faktor für die Angriffsfrequenz
     name: def.name + (ROMAN[tier] ?? ` ${tier + 1}`),
     hp, maxHp: hp, x: 0, z: -150, t: 0, wob: 0, phase: 1,
     attackT: 2.2, entering: true, flash: 0, slamT: 0,
@@ -2233,7 +2241,7 @@ function updateBoss(dt) {
     }
   }
   if (!b.dying) {
-    const sp = b.def.speed * (1 + (b.phase - 1) * 0.35) * (1 + b.rank * 0.08);
+    const sp = b.def.speed * (1 + (b.phase - 1) * 0.35) * (1 + b.rank * 0.04);
     b.wob += dt * sp;
     let tx = Math.sin(b.wob * 0.55) * 2.6 + Math.sin(b.wob * 1.7) * 0.4;
     // Zero-Day teleportiert sich ab Phase 2 gelegentlich
@@ -2316,7 +2324,7 @@ function updateBoss(dt) {
   if (b.attackT <= 0) {
     bossAttack(b, pick(b.def.attacks));
     // ab Phase 2 hängen spätere Bosse gerne einen zweiten Angriff an
-    if (b.phase >= 2 && Math.random() < 0.15 + b.rank * 0.07) later(b, 0.9, () => bossAttack(b, pick(b.def.attacks)));
+    if (b.phase >= 2 && Math.random() < 0.075 + b.rank * 0.035) later(b, 0.9, () => bossAttack(b, pick(b.def.attacks)));
     b.attackT = rand(1.7, 2.5) / (1 + (b.phase - 1) * 0.35) / b.aggro;
   }
 }
@@ -2717,14 +2725,52 @@ function show(name) {
   if (btn) btn.focus({ preventScroll: true });
 }
 
+// Bestenliste: Läuft das Spiel über serve.ps1, teilen sich alle Spielenden
+// eine gemeinsame Liste (api/scores). Sonst bleibt sie lokal im Browser.
 const SCORE_KEY = 'dplan-runner-scores';
-const loadScores = () => store.get(SCORE_KEY, []);
+const SCORE_API = 'api/scores';
+let sharedScores = null; // null = kein Server erreichbar → lokale Liste
+const loadScores = () => sharedScores || store.get(SCORE_KEY, []);
+async function refreshScores() {
+  try {
+    const res = await fetch(SCORE_API, { cache: 'no-store' });
+    const list = res.ok ? await res.json() : null;
+    sharedScores = Array.isArray(list) ? list : null;
+  } catch { sharedScores = null; }
+}
+// Gibt den Platz (0–9) des neuen Eintrags zurück, -1 wenn nicht in den Top 10
+async function submitScore(entry) {
+  if (sharedScores) {
+    try {
+      const res = await fetch(SCORE_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(entry),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        sharedScores = data.scores;
+        return data.rank;
+      }
+    } catch { /* Server weg → lokal speichern */ }
+    sharedScores = null;
+  }
+  const list = store.get(SCORE_KEY, []);
+  list.push(entry);
+  list.sort((a, b) => b.score - a.score);
+  const top = list.slice(0, 10);
+  store.set(SCORE_KEY, top);
+  return top.indexOf(entry);
+}
 const qualifies = (s) => {
   const list = loadScores();
   return s > 0 && (list.length < 10 || s > list[list.length - 1].score);
 };
 function renderScores(ol, highlight = -1) {
   const list = loadScores();
+  $('scoreSource').textContent = sharedScores
+    ? 'Gemeinsame Bestenliste aller Spielenden'
+    : 'Bestenliste nur in diesem Browser gespeichert';
   ol.innerHTML = '';
   if (!list.length) {
     const li = document.createElement('li');
@@ -2750,8 +2796,54 @@ function renderScores(ol, highlight = -1) {
   });
 }
 
+// Auswertung: jede Gate-Frage mit eigener Antwort, richtiger Antwort und Tipp
+function renderReview() {
+  const ol = $('reviewList');
+  ol.innerHTML = '';
+  $('overReview').classList.toggle('hidden', !gateLog.length);
+  $('overReview').open = gateLog.some((g) => !g.ok);
+  gateLog.forEach((g) => {
+    const li = document.createElement('li');
+    li.className = g.ok ? 'ok' : 'bad';
+    const head = document.createElement('div');
+    head.className = 'review-head';
+    const cat = document.createElement('small');
+    cat.textContent = g.q.cat || 'Security';
+    const mark = document.createElement('b');
+    mark.textContent = g.ok ? '✓ Richtig' : '✗ Falsch';
+    head.append(cat, mark);
+    const q = document.createElement('p');
+    q.className = 'review-q';
+    q.textContent = g.q.q;
+    li.append(head, q);
+    if (!g.ok) {
+      const picked = document.createElement('p');
+      picked.className = 'review-picked';
+      picked.textContent = `Deine Antwort: ${g.picked}`;
+      li.append(picked);
+    }
+    const right = document.createElement('p');
+    right.className = 'review-right';
+    right.textContent = `Richtig: ${g.right}`;
+    const tip = document.createElement('p');
+    tip.className = 'review-tip';
+    tip.textContent = g.q.tip;
+    li.append(right, tip);
+    ol.appendChild(li);
+  });
+}
+
+let scoreSaved = false;
+function updateSaveForm() {
+  const canSave = state === 'over' && !scoreSaved && qualifies(score);
+  const wasHidden = $('saveForm').classList.contains('hidden');
+  $('saveForm').classList.toggle('hidden', !canSave);
+  if (canSave && wasHidden) $('nameInput').focus({ preventScroll: true });
+}
+
 function showGameOver() {
   state = 'over';
+  scoreSaved = false;
   $('gatePanel').classList.add('hidden');
   $('overScore').textContent = fmt(score);
   $('overLevel').textContent = level;
@@ -2762,26 +2854,31 @@ function showGameOver() {
   else if (level >= 3) msg = 'Gut unterwegs! Die nächsten Stufen warten.';
   else msg = 'Paketverlust passiert – einfach nochmal senden!';
   $('overMsg').textContent = `${fmt(dist)} MB übertragen. ${msg}`;
-  const canSave = qualifies(score);
-  $('saveForm').classList.toggle('hidden', !canSave);
+  renderReview();
+  $('saveForm').classList.add('hidden');
   $('nameInput').value = store.get('dplan-cd-name', '');
   renderScores($('overScores'));
   show('over');
-  if (canSave) $('nameInput').focus({ preventScroll: true });
+  updateSaveForm();
+  // gemeinsame Liste nachladen – andere haben inzwischen vielleicht gespielt
+  refreshScores().then(() => {
+    if (state !== 'over' || scoreSaved) return;
+    renderScores($('overScores'));
+    updateSaveForm();
+  });
 }
 
-$('saveForm').addEventListener('submit', (ev) => {
+$('saveForm').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const name = $('nameInput').value.trim().slice(0, 18);
-  if (!name) return;
+  if (!name || scoreSaved) return;
+  scoreSaved = true;
+  $('btnSave').disabled = true;
   store.set('dplan-cd-name', name);
-  const list = loadScores();
   const entry = { name, score: Math.round(score), dist: Math.round(dist), level, date: new Date().toISOString() };
-  list.push(entry);
-  list.sort((a, b) => b.score - a.score);
-  const top = list.slice(0, 10);
-  store.set(SCORE_KEY, top);
-  renderScores($('overScores'), top.indexOf(entry));
+  const rank = await submitScore(entry);
+  $('btnSave').disabled = false;
+  renderScores($('overScores'), rank);
   $('saveForm').classList.add('hidden');
   $('btnAgain').focus({ preventScroll: true });
 });
@@ -2882,7 +2979,12 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) pause
 
 $('btnStart').addEventListener('click', newGame);
 $('btnAgain').addEventListener('click', newGame);
-$('btnScores').addEventListener('click', () => { renderScores($('scoreList')); show('scores'); });
+$('btnScores').addEventListener('click', () => {
+  renderScores($('scoreList'));
+  show('scores');
+  refreshScores().then(() => renderScores($('scoreList')));
+});
+refreshScores();
 $('btnBack').addEventListener('click', () => show('menu'));
 $('btnPause').addEventListener('click', () => (state === 'paused' ? resume() : pause()));
 $('btnResume').addEventListener('click', resume);

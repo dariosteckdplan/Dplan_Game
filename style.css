@@ -175,6 +175,15 @@ canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 }
 @keyframes rise { from { transform: translate(-50%, 24px); opacity: 0; } }
 .gate-panel .brand-bar { font-size: 14px; padding: 3px 16px; margin-bottom: 8px; }
+.gate-cat {
+  display: inline-block;
+  margin-left: 8px;
+  font-family: var(--font);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--blue-dark);
+}
 .gate-q { font-family: var(--font); font-size: 20px; line-height: 1.35; margin: 0 0 12px; color: var(--ink); }
 .gate-opts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .gate-opt {
@@ -471,6 +480,29 @@ canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 4px 0 8px; }
 .stats div { display: flex; flex-direction: column; background: var(--blue-soft); border-radius: 12px; padding: 10px 4px; font-size: 12px; color: var(--grey-dark); }
 .big { font-family: var(--font); font-size: 26px; font-weight: 700; color: var(--blue); }
+
+.review { margin: 0 0 14px; text-align: left; }
+.review summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--blue-dark);
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--blue-soft);
+}
+.review ol { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; max-height: 320px; overflow-y: auto; }
+.review li { padding: 10px 12px; border-radius: 12px; border-left: 4px solid var(--green); background: #f3faf6; }
+.review li.bad { border-left-color: var(--red); background: #fdf5f5; }
+.review-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.review-head small { color: var(--grey); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.review-head b { font-size: 12px; color: var(--green); }
+.review li.bad .review-head b { color: var(--red); }
+.review p { margin: 4px 0 0; font-size: 13px; line-height: 1.4; color: var(--grey-dark); }
+.review .review-q { font-weight: 600; color: var(--ink); }
+.review .review-picked { color: #b42318; }
+.review .review-right { color: #157a52; }
+.review .review-tip { font-style: italic; }
+.score-source { margin: 0 0 12px; }
 
 .save { margin-bottom: 12px; text-align: left; }
 .save label { display: block; font-weight: 700; color: var(--blue-dark); margin-bottom: 6px; }

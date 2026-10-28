@@ -10,8 +10,8 @@
   <script type="importmap">
     {
       "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+        "three": "./vendor/three/build/three.module.min.js",
+        "three/addons/": "./vendor/three/examples/jsm/"
       }
     }
   </script>
@@ -46,7 +46,7 @@
 
     <!-- Security-Gate: das Spiel hält an, die Frage erscheint unten -->
     <section id="gatePanel" class="gate-panel hidden" aria-live="polite">
-      <div class="brand-bar">Security-Gate</div>
+      <div class="brand-bar">Security-Gate</div><span id="gateCat" class="gate-cat"></span>
       <p id="gateQ" class="gate-q"></p>
       <div id="gateOpts" class="gate-opts"></div>
       <p id="gateHint" class="gate-hint">Tippe auf eine Antwort – oder wähle mit ← → und bestätige mit Enter.</p>
@@ -123,11 +123,15 @@
           <div><span id="overQuiz" class="big">0/0</span><span>Security-Gates</span></div>
         </div>
         <p id="overMsg" class="lead"></p>
+        <details id="overReview" class="review hidden">
+          <summary>Deine Antworten an den Security-Gates</summary>
+          <ol id="reviewList"></ol>
+        </details>
         <form id="saveForm" class="save hidden" autocomplete="off">
           <label for="nameInput">Neuer Eintrag in der Bestenliste!</label>
           <div class="row">
             <input id="nameInput" maxlength="18" placeholder="Dein Name" required>
-            <button class="btn primary" type="submit">Speichern</button>
+            <button id="btnSave" class="btn primary" type="submit">Speichern</button>
           </div>
         </form>
         <ol id="overScores" class="scores"></ol>
@@ -143,6 +147,7 @@
       <div class="card">
         <div class="brand-bar">Bestenliste</div>
         <ol id="scoreList" class="scores"></ol>
+        <p id="scoreSource" class="foot score-source"></p>
         <div class="actions">
           <button id="btnBack" class="btn secondary" type="button">Zurück</button>
         </div>
@@ -153,7 +158,7 @@
     <section id="ovError" class="overlay hidden">
       <div class="card small">
         <div class="brand-bar danger">3D nicht verfügbar</div>
-        <p class="lead">Die 3D-Grafik konnte nicht geladen werden. Bitte prüfe die Internetverbindung und lade die Seite neu.</p>
+        <p class="lead">Die 3D-Grafik konnte nicht gestartet werden. Bitte lade die Seite neu oder verwende einen aktuellen Browser mit WebGL.</p>
       </div>
     </section>
   </div>
