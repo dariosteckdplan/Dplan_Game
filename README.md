@@ -28,8 +28,9 @@ Ein 3D-Browser-Spiel im dplan-Design für Mitarbeitende und Kunden: Als dp-Daten
   - `2FA` – doppelte Punkte
   - `CLOUD` – zieht Datenpakete an
   - `BACKUP` – +1 Netzwerk
-- **Security-Gate:** Vor jedem Gate verschwinden die Hindernisse und das Spiel **hält an**. Die Frage erscheint unten im Bild – Antwort antippen (oder `←` `→` und `Enter`, bzw. `1` `2` `3`). Danach gibt es eine kurze Erklärung, mit «Weiter» fährt das Paket durchs gewählte Tor. Richtig = Bonuspunkte und +1 Netzwerk, falsch = −1 Netzwerk.
-- **Bestenliste:** Top 10, lokal im Browser gespeichert.
+- **Security-Gate:** Vor jedem Gate verschwinden die Hindernisse und das Spiel **hält an**. Die Frage erscheint unten im Bild – Antwort antippen (oder `←` `→` und `Enter`, bzw. `1` `2` `3`). Danach gibt es eine kurze Erklärung, mit «Weiter» fährt das Paket durchs gewählte Tor. Richtig = Bonuspunkte und +1 Netzwerk, falsch = −1 Netzwerk. Über 60 Fragen aus acht Themen (Phishing, Passwörter, Social Engineering, Malware & Updates, Backup & Daten, Datenschutz, Arbeitsplatz, Netzwerk & Vorfälle); innerhalb einer Runde wiederholt sich keine Frage.
+- **Auswertung:** Am Spielende zeigt «Deine Antworten an den Security-Gates» jede gestellte Frage mit der eigenen und der richtigen Antwort samt Tipp – bei Fehlern automatisch aufgeklappt.
+- **Bestenliste:** Top 10. Läuft das Spiel über `serve.ps1`, ist sie für alle Spielenden gemeinsam (gespeichert in `data/scores.json`). Auf einem rein statischen Webserver bleibt sie lokal im Browser.
 - **Datenchip-Designs:** Classic, Night oder Ice – Auswahl im Startmenü, wird gespeichert.
 - **Soundtrack «Datacenter Drive»:** wird live im Browser erzeugt (WebAudio, keine Musikdateien) und reagiert aufs Spiel:
   - jede Stufe wird schneller (112 → 140 BPM), steigt in der Tonart und bekommt neue Spuren (Clap, Melodie, Supersaw-Stabs, verzerrter Bass); die Kick lässt alles «pumpen»
@@ -41,17 +42,29 @@ Ein 3D-Browser-Spiel im dplan-Design für Mitarbeitende und Kunden: Als dp-Daten
 
 ## Starten
 
-Statische Webseite ohne Build-Schritt. Die 3D-Bibliothek [Three.js](https://threejs.org) wird per CDN (jsDelivr) geladen – es braucht also eine Internetverbindung.
+Webseite ohne Build-Schritt. Die 3D-Bibliothek [Three.js](https://threejs.org) (0.160.0, MIT-Lizenz) liegt in `vendor/three/` – das Spiel läuft also auch ohne Internet, z.B. an einem Messestand oder hinter einer strengen Firewall.
 
 ```powershell
 ./serve.ps1
 ```
 
-Dann http://localhost:8080 öffnen. Zum Veröffentlichen genügt es, `index.html`, `style.css`, `runner.js`, `questions.js` und `assets/` auf einen beliebigen Webserver (z.B. Intranet, Azure Static Web Apps, GitHub Pages) zu kopieren. Direktes Öffnen der Datei per Doppelklick funktioniert nicht (ES-Module brauchen einen Webserver).
+Dann http://localhost:8080 öffnen. Der Server stellt unter `/api/scores` auch die gemeinsame Bestenliste bereit.
+
+**Im Netz für andere Geräte freigeben** (z.B. Wettbewerb im Büro oder Tablets am Messestand):
+
+```powershell
+./serve.ps1 -Public
+```
+
+Das braucht entweder eine PowerShell mit Admin-Rechten oder einmalig eine URL-Reservierung (in einer Admin-PowerShell: `netsh http add urlacl url=http://+:8080/ user="$env:USERDOMAIN\$env:USERNAME"`) sowie eine Firewall-Regel für den Port. Andere Geräte öffnen dann `http://<Rechnername>:8080`.
+
+**Bestenliste zurücksetzen:** `data/scores.json` löschen (der Ordner `data/` wird nicht ins Git eingecheckt).
+
+Zum Veröffentlichen ohne gemeinsame Bestenliste genügt es, `index.html`, `style.css`, `runner.js`, `questions.js`, `assets/` und `vendor/` auf einen beliebigen Webserver (z.B. Intranet, Azure Static Web Apps, GitHub Pages) zu kopieren. Direktes Öffnen der Datei per Doppelklick funktioniert nicht (ES-Module brauchen einen Webserver).
 
 ## Anpassen
 
-- **Quizfragen:** `questions.js` – die erste Antwort ist jeweils die richtige (wird beim Anzeigen gemischt).
+- **Quizfragen:** `questions.js` – die erste Antwort ist jeweils die richtige (wird beim Anzeigen gemischt). `cat` ist das Thema, `tip` die Erklärung nach der Antwort.
 - **Tempo & Schwierigkeit:** `SPEED_START`, `levelSpeed`, `UNLOCK_LEVEL`, `GATE_EVERY` und `POWER` oben in `runner.js`; Muster in `spawnRow()`.
 - **Farben & Lichtstimmung:** `C` und `THEMES` in `runner.js`, CSS-Variablen in `style.css`.
 - **Grafik:** Der Glow-Effekt (Bloom) ist auf Touch-Geräten aus Performance-Gründen deaktiviert.
