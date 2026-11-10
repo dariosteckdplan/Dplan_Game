@@ -30,7 +30,7 @@ Ein 3D-Browser-Spiel im dplan-Design für Mitarbeitende und Kunden: Als dp-Daten
   - `BACKUP` – +1 Netzwerk
 - **Security-Gate:** Vor jedem Gate verschwinden die Hindernisse und das Spiel **hält an**. Die Frage erscheint unten im Bild – Antwort antippen (oder `←` `→` und `Enter`, bzw. `1` `2` `3`). Danach gibt es eine kurze Erklärung, mit «Weiter» fährt das Paket durchs gewählte Tor. Richtig = Bonuspunkte und +1 Netzwerk, falsch = −1 Netzwerk. Über 60 Fragen aus acht Themen (Phishing, Passwörter, Social Engineering, Malware & Updates, Backup & Daten, Datenschutz, Arbeitsplatz, Netzwerk & Vorfälle); innerhalb einer Runde wiederholt sich keine Frage.
 - **Auswertung:** Am Spielende zeigt «Deine Antworten an den Security-Gates» jede gestellte Frage mit der eigenen und der richtigen Antwort samt Tipp – bei Fehlern automatisch aufgeklappt.
-- **Bestenliste:** Top 10. Läuft das Spiel über `serve.ps1`, ist sie für alle Spielenden gemeinsam (gespeichert in `data/scores.json`). Auf einem rein statischen Webserver bleibt sie lokal im Browser.
+- **Bestenliste:** Top 10. Gemeinsam für alle Spielenden, wenn Supabase eingerichtet ist (siehe [Online](#online-github-pages)) oder das Spiel über `serve.ps1` läuft (gespeichert in `data/scores.json`). Sonst bleibt sie lokal im Browser.
 - **Datenchip-Designs:** Classic, Night oder Ice – Auswahl im Startmenü, wird gespeichert.
 - **Soundtrack «Datacenter Drive»:** wird live im Browser erzeugt (WebAudio, keine Musikdateien) und reagiert aufs Spiel:
   - jede Stufe wird schneller (112 → 140 BPM), steigt in der Tonart und bekommt neue Spuren (Clap, Melodie, Supersaw-Stabs, verzerrter Bass); die Kick lässt alles «pumpen»
@@ -60,7 +60,21 @@ Das braucht entweder eine PowerShell mit Admin-Rechten oder einmalig eine URL-Re
 
 **Bestenliste zurücksetzen:** `data/scores.json` löschen (der Ordner `data/` wird nicht ins Git eingecheckt).
 
-Zum Veröffentlichen ohne gemeinsame Bestenliste genügt es, `index.html`, `style.css`, `runner.js`, `questions.js`, `assets/` und `vendor/` auf einen beliebigen Webserver (z.B. Intranet, Azure Static Web Apps, GitHub Pages) zu kopieren. Direktes Öffnen der Datei per Doppelklick funktioniert nicht (ES-Module brauchen einen Webserver).
+## Online (GitHub Pages)
+
+Das Spiel läuft unter https://dariosteckdplan.github.io/Dplan_Game/ und wird bei jedem Push auf `main` automatisch aktualisiert (kostenlos, da das Repo öffentlich ist).
+
+**Gemeinsame Bestenliste mit Supabase** (kostenloser Plan reicht):
+
+1. Auf https://supabase.com ein Projekt anlegen.
+2. Im Dashboard unter *SQL Editor* den Inhalt von [`supabase.sql`](supabase.sql) ausführen.
+3. Unter *Project Settings → API Keys* die Projekt-URL und den **Publishable key** (oder den *anon* key) kopieren und in `runner.js` bei `SUPABASE_URL` und `SUPABASE_KEY` eintragen. Diese Werte sind öffentlich gedacht: Die Datenbank erlaubt nur das Lesen der Top 10 und das Eintragen über geprüfte Funktionen. Den *secret*- bzw. *service_role*-Key **nie** eintragen.
+
+Ist Supabase eingetragen, nutzt auch `serve.ps1` diese Liste. Zurücksetzen: im *SQL Editor* `truncate scores;` ausführen. Hinweis: Kostenlose Supabase-Projekte pausieren nach einer Woche ohne Zugriffe und lassen sich im Dashboard wieder starten; bis dahin fällt das Spiel auf die lokale Liste zurück.
+
+## Andere Webserver
+
+Zum Veröffentlichen genügt es, `index.html`, `style.css`, `runner.js`, `questions.js`, `assets/` und `vendor/` auf einen beliebigen Webserver (z.B. Intranet, Azure Static Web Apps) zu kopieren. Direktes Öffnen der Datei per Doppelklick funktioniert nicht (ES-Module brauchen einen Webserver).
 
 ## Anpassen
 

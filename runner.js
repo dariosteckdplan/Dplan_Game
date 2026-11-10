@@ -2725,15 +2725,37 @@ function show(name) {
   if (btn) btn.focus({ preventScroll: true });
 }
 
-// Bestenliste: Läuft das Spiel über serve.ps1, teilen sich alle Spielenden
-// eine gemeinsame Liste (api/scores). Sonst bleibt sie lokal im Browser.
+// Bestenliste: Ist Supabase eingetragen (z.B. für GitHub Pages), teilen sich alle
+// Spielenden diese Liste. Sonst über serve.ps1 (api/scores). Ohne beides bleibt
+// sie lokal im Browser. Der Publishable/Anon-Key ist öffentlich gedacht;
+// die Datenbank lässt nur die Funktionen aus supabase.sql zu.
+const SUPABASE_URL = 'https://muvfoqakmixcgkjrqxiz.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_cdXRqQ04kgHfCFi5xxc5vg_5NxdGCLI'; // Publishable key, öffentlich
 const SCORE_KEY = 'dplan-runner-scores';
-const SCORE_API = 'api/scores';
+const scoreBackend = SUPABASE_URL && SUPABASE_KEY
+  ? {
+    rpc: (fn, args = {}) => fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_KEY },
+      body: JSON.stringify(args),
+    }),
+    get() { return this.rpc('top_scores'); },
+    post: (e) => scoreBackend.rpc('submit_score', { p_name: e.name, p_score: e.score, p_dist: e.dist, p_level: e.level }),
+  }
+  : {
+    get: () => fetch('api/scores', { cache: 'no-store' }),
+    post: (e) => fetch('api/scores', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(e),
+    }),
+  };
 let sharedScores = null; // null = kein Server erreichbar → lokale Liste
 const loadScores = () => sharedScores || store.get(SCORE_KEY, []);
 async function refreshScores() {
   try {
-    const res = await fetch(SCORE_API, { cache: 'no-store' });
+    const res = await scoreBackend.get();
     const list = res.ok ? await res.json() : null;
     sharedScores = Array.isArray(list) ? list : null;
   } catch { sharedScores = null; }
@@ -2742,11 +2764,7 @@ async function refreshScores() {
 async function submitScore(entry) {
   if (sharedScores) {
     try {
-      const res = await fetch(SCORE_API, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(entry),
-      });
+      const res = await scoreBackend.post(entry);
       if (res.ok) {
         const data = await res.json();
         sharedScores = data.scores;
